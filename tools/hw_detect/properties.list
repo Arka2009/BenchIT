@@ -3,356 +3,411 @@
 #* note: the 'Name' field is matched as a regular expression, extended meta chars have to be escaped with double backslashes               *
 #*******************************************************************************************************************************************
 # AMD K7
-# Name					Family	Model	Codename					Node	Package
-AMD Athlon				6	1	K7						250	A(462)
-AMD Athlon				6	2	K75						180	A(462)
-AMD Duron				6	3	Spitfire					180	A(462)
-AMD Athlon				6	4	Thunderbird					180	A(462)
-AMD Athlon				6	6	Palomino					180	A(462)
-AMD Duron				6	7	Morgan						180	A(462)
-AMD Athlon				6	8	Thoroughbred					130	A(462)
+# Name					Family	Model	Codename					Node
+AMD Athlon				6	1	K7						250
+AMD Athlon				6	2	K75						180
+AMD Duron				6	3	Spitfire					180
+AMD Athlon				6	4	Thunderbird					180
+AMD Athlon				6	6	Palomino					180
+AMD Duron				6	7	Morgan						180
+AMD Athlon				6	8	Thoroughbred					130
 #Barton 512K L2, Thorton 256K L2
-AMD Athlon				6	10	Barton/Thorton					130	A(462)
-AMD Sempron				6	6	Palomino					180	A(462)
-AMD Sempron				6	7	Morgan						180	A(462)
-AMD Sempron				6	8	Thoroughbred					130	A(462)
+AMD Athlon				6	10	Barton/Thorton					130
+AMD Sempron				6	6	Palomino					180
+AMD Sempron				6	7	Morgan						180
+AMD Sempron				6	8	Thoroughbred					130
 #Barton 512K L2, Thorton 256K L2
-Sempron					6	10	Barton/Thorton					130	A(462)
+Sempron					6	10	Barton/Thorton					130
 #*******************************************************************************************************************************************
 # AMD K8 (Family 0Fh)
-# Name					Family	Model	Codename					Node	Package
-AMD Opteron(tm) Processor 1		15	39	Venus						90	939
-AMD Opteron(tm) Processor 2		15	37	Troy						90	940
-AMD Opteron(tm) Processor 8		15	37	Athens						90	940
-Dual Core AMD Opteron(tm) Processor 1	15	35	Denmark						90	939
-Dual Core AMD Opteron(tm) Processor 2	15	33	Italy						90	940
-Dual Core AMD Opteron(tm) Processor 8	15	33	Egypt						90	940
-Dualcore AMD Opteron(tm) Processor 12	15	67	Santa Ana					90	AM2
-Dualcore AMD Opteron(tm) Processor [28]2	15	65	Santa Rosa					90	F(1207)
-AMD Opteron(tm) Processor		15	5	Sledgehammer					130	940
-AMD Opteron(tm) Processor		15	21	unknown AMD K8 (revision SH-D0)			90	940
-AMD Athlon(tm) 64 FX			15	5	Sledgehammer					130	940
-AMD Athlon(tm) 64 FX			15	7	Sledgehammer					130	939
-AMD Athlon(tm) 64 FX			15	39	San Diego					90	939
-AMD Athlon(tm) 64 FX			15	21	unknown AMD K8 (revision SH-D0)			90	940
-AMD Athlon(tm) 64 FX			15	23	unknown AMD K8 (revision SH-D0)			90	939
-AMD Athlon(tm) 64 FX			15	35	Toledo						90	939
-AMD Athlon(tm) 64 FX			15	67	Windsor						90	AM2
-AMD Athlon(tm) 64 FX			15	65	Windsor						90	F(1207)
-AMD Athlon(tm) 64 FX			15	193	Windsor						90	F(1207)
-AMD Athlon(tm) 64 Processor		15	4	Clawhammer					130	754
-AMD Athlon(tm) 64 Processor		15	7	Clawhammer					130	939
-AMD Athlon(tm) 64 Processor		15	20	unknown AMD K8 (revision SH-D0)			90	754
-AMD Athlon(tm) 64 Processor		15	23	unknown AMD K8 (revision SH-D0)			90	939
-AMD Athlon(tm) 64 Processor		15	39	San Diego					90	939
-AMD Athlon(tm) 64 Processor		15	8	unknown AMD K8 (revision CH-CG)			130	754
-AMD Athlon(tm) 64 Processor		15	11	unknown AMD K8 (revision CH-CG)			130	939
-AMD Athlon(tm) 64 Processor		15	24	unknown AMD K8 (revision CH-D0)			90	754
-AMD Athlon(tm) 64 Processor		15	27	unknown AMD K8 (revision CH-D0)			90	939
-AMD Athlon(tm) 64 Processor		15	12	Newcastle					130	754
-AMD Athlon(tm) 64 Processor		15	14	Newcastle					130	754
-AMD Athlon(tm) 64 Processor		15	15	Newcastle					130	939
-AMD Athlon(tm) 64 Processor		15	28	Winchester					90	754
-AMD Athlon(tm) 64 Processor		15	31	Winchester					90	939
-AMD Athlon(tm) 64 Processor		15	44	Venice						90	754
-AMD Athlon(tm) 64 Processor		15	47	Venice						90	939
-AMD Athlon(tm) 64 Processor		15	79	Orleans						90	AM2
-AMD Athlon(tm) 64 Processor		15	95	Orleans						90	AM2
-AMD Athlon(tm) 64 Processor		15	76	Orleans						90	S1
-AMD Athlon(tm) 64 Processor		15	111	Lima						65	AM2
-AMD Athlon(tm) 64 Processor		15	127	Lima						65	AM2
-AMD Athlon(tm) Processor LE		15	95	Orleans						90	AM2
-AMD Athlon(tm) 64 X2			15	43	Manchester					90	939
-AMD Athlon(tm) 64 X2			15	35	Toledo						90	939
-AMD Athlon(tm) 64 X2			15	67	Windsor						90	AM2
-AMD Athlon(tm) 64 X2			15	75	Windsor						90	AM2
-AMD Athlon(tm) 64 X2			15	104	Brisbane					65	AM2
-AMD Athlon(tm) 64 X2			15	107	Brisbane					65	AM2
-AMD Athlon(tm) X2			15	104	Brisbane					65	AM2
-AMD Athlon(tm) X2			15	107	Brisbane					65	AM2
-AMD Athlon(tm) 2			15	104	Brisbane					65	AM2
-AMD Athlon(tm) 2			15	107	Brisbane					65	AM2
-AMD Athlon(tm) Dual			15	104	Brisbane					65	AM2
-AMD Athlon(tm) Dual			15	107	Brisbane					65	AM2
-Mobile AMD Athlon(tm) 64 Processor	15	4	Clawhammer					130	754
-Mobile AMD Athlon(tm) 64 Processor	15	20	unknown AMD K8 (revision SH-D0)			90	754
-Mobile AMD Athlon(tm) 64 Processor	15	8	unknown AMD K8 (revision CH-CG)			130	754
-Mobile AMD Athlon(tm) 64 Processor	15	24	unknown AMD K8 (revision CH-D0)			90	754
-Mobile AMD Athlon(tm) 64 Processor	15	12	Odessa						130	754
-Mobile AMD Athlon(tm) 64 Processor	15	14	Odessa						130	754
-Mobile AMD Athlon(tm) 64 Processor	15	28	Oakville					90	754
-Mobile AMD Athlon(tm) 64 Processor	15	36	Newark						90	754
-AMD Sempron(tm) Processor		15	12	Paris						130	754
-AMD Sempron(tm) Processor		15	14	Paris						130	754
-AMD Sempron(tm) Processor		15	15	Paris						130	939
-AMD Sempron(tm) Processor		15	28	Palermo						90	754
-AMD Sempron(tm) Processor		15	31	Palermo						90	939
-AMD Sempron(tm) Processor		15	44	Palermo						90	754
-AMD Sempron(tm) Processor		15	47	Palermo						90	939
-AMD Sempron(tm) Processor		15	79	Manila						90	AM2
-AMD Sempron(tm) Processor		15	95	Manila						90	AM2
+# Name					Family	Model	Codename					Node
+AMD Opteron(tm) Processor 1		15	39	Venus						90
+AMD Opteron(tm) Processor 2		15	37	Troy						90
+AMD Opteron(tm) Processor 8		15	37	Athens						90
+Dual Core AMD Opteron(tm) Processor 1	15	35	Denmark						90
+Dual Core AMD Opteron(tm) Processor 2	15	33	Italy						90
+Dual Core AMD Opteron(tm) Processor 8	15	33	Egypt						90
+Dualcore AMD Opteron(tm) Processor 12	15	67	Santa Ana					90
+Dualcore AMD Opteron(tm) Processor [28]2	15	65	Santa Rosa				90
+AMD Opteron(tm) Processor		15	5	Sledgehammer					130
+AMD Athlon(tm) 64 FX			15	5	Sledgehammer					130
+AMD Athlon(tm) 64 FX			15	7	Sledgehammer					130
+AMD Athlon(tm) 64 FX			15	39	San Diego					90
+AMD Athlon(tm) 64 FX			15	35	Toledo						90
+AMD Athlon(tm) 64 FX			15	67	Windsor						90
+AMD Athlon(tm) 64 FX			15	65	Windsor						90
+AMD Athlon(tm) 64 FX			15	193	Windsor						90
+AMD Athlon(tm) 64 Processor		15	4	Clawhammer					130
+AMD Athlon(tm) 64 Processor		15	7	Clawhammer					130
+AMD Athlon(tm) 64 Processor		15	39	San Diego					90
+AMD Athlon(tm) 64 Processor		15	12	Newcastle					130
+AMD Athlon(tm) 64 Processor		15	14	Newcastle					130
+AMD Athlon(tm) 64 Processor		15	15	Newcastle					130
+AMD Athlon(tm) 64 Processor		15	28	Winchester					90
+AMD Athlon(tm) 64 Processor		15	31	Winchester					90
+AMD Athlon(tm) 64 Processor		15	44	Venice						90
+AMD Athlon(tm) 64 Processor		15	47	Venice						90
+AMD Athlon(tm) 64 Processor		15	79	Orleans						90
+AMD Athlon(tm) 64 Processor		15	95	Orleans						90
+AMD Athlon(tm) 64 Processor		15	76	Orleans						90
+AMD Athlon(tm) 64 Processor		15	111	Lima						65
+AMD Athlon(tm) 64 Processor		15	127	Lima						65
+AMD Athlon(tm) Processor LE		15	95	Orleans						90
+AMD Athlon(tm) 64 X2			15	43	Manchester					90
+AMD Athlon(tm) 64 X2			15	35	Toledo						90
+AMD Athlon(tm) 64 X2			15	67	Windsor						90
+AMD Athlon(tm) 64 X2			15	75	Windsor						90
+AMD Athlon(tm)				15	104	Brisbane					65
+AMD Athlon(tm)				15	107	Brisbane					65
+Mobile AMD Athlon(tm) 64 Processor	15	4	Clawhammer					130
+Mobile AMD Athlon(tm) 64 Processor	15	12	Odessa						130
+Mobile AMD Athlon(tm) 64 Processor	15	14	Odessa						130
+Mobile AMD Athlon(tm) 64 Processor	15	28	Oakville					90
+Mobile AMD Athlon(tm) 64 Processor	15	36	Newark						90
+AMD Sempron(tm) Processor		15	12	Paris						130
+AMD Sempron(tm) Processor		15	14	Paris						130
+AMD Sempron(tm) Processor		15	15	Paris						130
+AMD Sempron(tm) Processor		15	28	Palermo						90
+AMD Sempron(tm) Processor		15	31	Palermo						90
+AMD Sempron(tm) Processor		15	44	Palermo						90
+AMD Sempron(tm) Processor		15	47	Palermo						90
+AMD Sempron(tm) Processor		15	79	Manila						90
+AMD Sempron(tm) Processor		15	95	Manila						90
 #Richmond 256 KB L2, Keene 512 KB L2
-AMD Sempron(tm) Processor		15	76	Richmond/Keene					90	S1
-AMD Sempron(tm) Dual			15	104	Brisbane					65	AM2
-AMD Sempron(tm) Dual			15	107	Brisbane					65	AM2
-AMD Sempron(tm) Processor		15	111	Sparta/Huron					65	n/a
-AMD Sempron(tm) Processor		15	127	Sparta/Huron					65	n/a
-Mobile AMD Sempron(tm) Processor	15	8	Dublin						130	754
-Mobile AMD Sempron(tm) Processor	15	24	unknown AMD K8 (revision CH-D0)			90	754
-Mobile AMD Sempron(tm) Processor	15	12	Paris						130	754
-Mobile AMD Sempron(tm) Processor	15	14	Paris						130	754
-Mobile AMD Sempron(tm) Processor	15	28	Georgetown					90	754
-Mobile AMD Sempron(tm) Processor	15	44	Albany						90	754
+AMD Sempron(tm) Processor		15	76	Richmond/Keene					90
+AMD Sempron(tm) Dual			15	104	Brisbane					65
+AMD Sempron(tm) Dual			15	107	Brisbane					65
+AMD Sempron(tm) Processor		15	111	Sparta/Huron					65
+AMD Sempron(tm) Processor		15	127	Sparta/Huron					65
+Mobile AMD Sempron(tm) Processor	15	8	Dublin						130
+Mobile AMD Sempron(tm) Processor	15	12	Paris						130
+Mobile AMD Sempron(tm) Processor	15	14	Paris						130
+Mobile AMD Sempron(tm) Processor	15	28	Georgetown					90
+Mobile AMD Sempron(tm) Processor	15	44	Albany						90
 #Richmond 256 KB L2, Keene 512 KB L2
-Mobile AMD Sempron(tm) Processor	15	76	Richmond/Keene					90	S1
-Mobile AMD Sempron(tm) Processor	15	108	Sherman						65	S1
-Mobile AMD Sempron(tm) Processor	15	124	Sherman						65	S1
-Mobile AMD Athlon(tm)			15	108	Sherman						65	S1
-Mobile AMD Athlon(tm)			15	124	Sherman						65	S1
-Mobile AMD Athlon(tm) XP_M Processor	15	4	Clawhammer					130	754
-Mobile AMD Athlon(tm) XP_M Processor	15	20	unknown AMD K8 (revision SH-D0)			90	754
-Mobile AMD Athlon(tm) XP-M Processor	15	8	Dublin						130	754
-Mobile AMD Athlon(tm) XP-M Processor	15	24	unknown AMD K8 (revision CH-D0)			90	754
-Mobile AMD Athlon(tm) XP-M Processor	15	12	Paris						130	754
-Mobile AMD Athlon(tm) XP-M Processor	15	14	Paris						130	754
-Mobile AMD Athlon(tm) XP-M Processor	15	28	Georgetown					90	754
-AMD Turion(tm) 64 Mobile		15	36	Lancaster					90	754
-AMD Turion(tm) 64 Mobile		15	76	Richmond					90	S1
+Mobile AMD Sempron(tm) Processor	15	76	Richmond/Keene					90
+Mobile AMD Sempron(tm) Processor	15	108	Sherman						65
+Mobile AMD Sempron(tm) Processor	15	124	Sherman						65
+Mobile AMD Athlon(tm)			15	108	Sherman						65
+Mobile AMD Athlon(tm)			15	124	Sherman						65
+Mobile AMD Athlon(tm) XP_M Processor	15	4	Clawhammer					130
+Mobile AMD Athlon(tm) XP-M Processor	15	8	Dublin						130
+Mobile AMD Athlon(tm) XP-M Processor	15	12	Paris						130
+Mobile AMD Athlon(tm) XP-M Processor	15	14	Paris						130
+Mobile AMD Athlon(tm) XP-M Processor	15	28	Georgetown					90
+AMD Turion(tm) 64 Mobile		15	36	Lancaster					90
+AMD Turion(tm) 64 Mobile		15	76	Richmond					90
 #Trinidad 512KB L2 Taylor 256KB L2
-AMD Turion(tm) 64 X2			15	72	Trinidad/Taylor					90	S1
-AMD Turion(tm) 64 X2			15	100	Tyler						65	S1
-AMD Athlon(tm) Neo X2			15	107	Conesus						65	n/a
-AMD Athlon(tm) Neo			15	111	Huron						65	ASB1
-AMD Athlon(tm) Neo			15	127	Huron						65	ASB1
-AMD Turion(tm) Neo X2			15	107	Conesus						65	ASB1
+AMD Turion(tm) 64 X2			15	72	Trinidad/Taylor					90
+AMD Turion(tm) 64 X2			15	100	Tyler						65
+AMD Athlon(tm) Neo X2			15	107	Conesus						65
+AMD Athlon(tm) Neo			15	111	Huron						65
+AMD Athlon(tm) Neo			15	127	Huron						65
+AMD Turion(tm) Neo X2			15	107	Conesus						65
 #*******************************************************************************************************************************************
 # AMD K10 (Family 10h)
-# package type of AMD Family 10h Processors is determined by CPUID Fn8000_0001_EBX
-# Name					Family	Model	Codename					Node	Package
-Quad-Core AMD Opteron(tm) Processor 13	16	2	Budapest					65	AM2+
-Quad-Core AMD Opteron(tm) Processor 23	16	2	Barcelona					65	F(1207)
-Quad-Core AMD Opteron(tm) Processor 83	16	2	Barcelona					65	F(1207)
-Quad-Core AMD Opteron(tm) Processor 13	16	4	Suzuka						45	AM3
-Quad-Core AMD Opteron(tm) Processor 23	16	4	Shanghai					45	F(1207)
-Quad-Core AMD Opteron(tm) Processor 83	16	4	Shanghai					45	F(1207)
-Six-Core AMD Opteron(tm) Processor 14	16	8	unknown AMD K10					45	n/a
-Six-Core AMD Opteron(tm) Processor 24	16	8	Istanbul					45	F(1207)
-Six-Core AMD Opteron(tm) Processor 84	16	8	Istanbul					45	F(1207)
-AMD Opteron(tm) Processor 41		16	8	Lisbon						45	C32
-AMD Opteron(tm) Processor 61		16	9	Magny-Cours					45	G34
-Embedded AMD Opteron(tm) Processor 13	16	2	Budapest(embedded)				65	n/a
-Embedded AMD Opteron(tm) Processor 23	16	2	Barcelona(embedded)				65	n/a
-Embedded AMD Opteron(tm) Processor 83	16	2	Barcelona(embedded)				65	n/a
-Embedded AMD Opteron(tm) Processor 13	16	4	Suzuka(embedded)				45	n/a
-Embedded AMD Opteron(tm) Processor 23	16	4	Shanghai(embedded)				45	n/a
-Embedded AMD Opteron(tm) Processor 83	16	4	Shanghai(embedded)				45	n/a
-Embedded AMD Opteron(tm) Processor 24	16	8	Istanbul(embedded)				45	n/a
-Embedded AMD Opteron(tm) Processor 84	16	8	Istanbul(embedded)				45	n/a
-AMD Phenom(tm) 9			16	2	Agena						65	AM2+
-AMD Phenom(tm) 8			16	2	Toliman						65	AM2+
-AMD Athlon(tm)				16	2	Kuma						65	AM2+
-AMD Phenom(tm) II X6			16	10	Thuban						45	AM3
-AMD Phenom(tm) II X4			16	10	Zosma						45	AM3
-AMD Phenom(tm) II X4			16	4	Deneb						45	AM3
-AMD Phenom(tm) II X3			16	4	Heka						45	AM3
-AMD Phenom(tm) II X2			16	4	Calisto						45	AM3
-#in case BIOS leaves out Xn
-AMD Phenom(tm) II 10			16	10	Thuban						45	AM3
-AMD Phenom(tm) II 9			16	10	Zosma						45	AM3
-AMD Phenom(tm) II [89]			16	4	Deneb						45	AM3
-AMD Phenom(tm) II 7			16	4	Heka						45	AM3
-AMD Phenom(tm) II 5			16	4	Calisto						45	AM3
-AMD Athlon(tm) II X4			16	5	Propus						45	AM3
-AMD Athlon(tm) II X3			16	5	Rana						45	AM3
+# Name					Family	Model	Codename					Node
+Quad-Core AMD Opteron(tm) Processor 13	16	2	Budapest					65
+Quad-Core AMD Opteron(tm) Processor 23	16	2	Barcelona					65
+Quad-Core AMD Opteron(tm) Processor 83	16	2	Barcelona					65
+Quad-Core AMD Opteron(tm) Processor 13	16	4	Suzuka						45
+Quad-Core AMD Opteron(tm) Processor 23	16	4	Shanghai					45
+Quad-Core AMD Opteron(tm) Processor 83	16	4	Shanghai					45
+Six-Core AMD Opteron(tm) Processor 14	16	8	Istanbul					45
+Six-Core AMD Opteron(tm) Processor 24	16	8	Istanbul					45
+Six-Core AMD Opteron(tm) Processor 84	16	8	Istanbul					45
+AMD Opteron(tm) Processor 41		16	8	Lisbon						45
+AMD Opteron(tm) Processor 61		16	9	Magny-Cours					45
+Embedded AMD Opteron(tm) Processor 13	16	2	Budapest(embedded)				65
+Embedded AMD Opteron(tm) Processor 23	16	2	Barcelona(embedded)				65
+Embedded AMD Opteron(tm) Processor 83	16	2	Barcelona(embedded)				65
+Embedded AMD Opteron(tm) Processor 13	16	4	Suzuka(embedded)				45
+Embedded AMD Opteron(tm) Processor 23	16	4	Shanghai(embedded)				45
+Embedded AMD Opteron(tm) Processor 83	16	4	Shanghai(embedded)				45
+Embedded AMD Opteron(tm) Processor 24	16	8	Istanbul(embedded)				45
+Embedded AMD Opteron(tm) Processor 84	16	8	Istanbul(embedded)				45
+Embedded AMD Opteron(tm) Processor 41	16	8	Lisbon						45
+Embedded AMD Opteron(tm) Processor 61	16	9	Magny-Cours					45
+AMD Phenom(tm) 9			16	2	Agena						65
+AMD Phenom(tm) 8			16	2	Toliman						65
+AMD Athlon(tm)				16	2	Kuma						65
+AMD Phenom(tm) II X6			16	10	Thuban						45
+AMD Phenom(tm) II X4			16	10	Zosma						45
+AMD Phenom(tm) II X4			16	4	Deneb						45
+AMD Phenom(tm) II X3			16	4	Heka						45
+AMD Phenom(tm) II X2			16	4	Calisto						45
+AMD Phenom(tm) II X4			16	5	Propus						45
+AMD Athlon(tm) II X4			16	5	Propus						45
+AMD Athlon(tm) II X3			16	5	Rana						45
 #some X2s recycle propus dies
-AMD Athlon(tm) II X2			16	5	Propus						45	AM3
-AMD Athlon(tm) II X2			16	6	Regor						45	AM3
-#in case BIOS leaves out Xn
-AMD Athlon(tm) II [26]			16	5	Propus						45	AM3
-AMD Athlon(tm) II 4			16	5	Rana						45	AM3
-AMD Athlon(tm) II [12]			16	6	Regor						45	AM3
-AMD Sempron(tm) X2 1			16	6	Regor						45	AM3
-AMD Sempron(tm) 1			16	6	Regor						45	AM3
+AMD Athlon(tm) II X2			16	5	Propus						45
+AMD Phenom(tm) II X2			16	6	Regor						45
+AMD Athlon(tm) II X2			16	6	Regor						45
+AMD Athlon(tm) X2			16	6	Regor						45
+AMD Sempron(tm) X2 1			16	6	Regor						45
+AMD Sempron(tm) 1			16	6	Regor						45
 #mobile
-AMD Sempron(tm) M1			16	6	Caspian						45	S1
-AMD Turion(tm) II Ultra			16	6	Caspian						45	S1
-AMD Turion(tm) II Dual			16	6	Caspian						45	S1
-AMD Athlon(tm) II Dual			16	6	Caspian						45	S1
+AMD Sempron(tm) M1			16	6	Caspian						45
+AMD Turion(tm) II Ultra			16	6	Caspian						45
+AMD Turion(tm) II Dual			16	6	Caspian						45
+AMD Athlon(tm) II Dual			16	6	Caspian						45
 #package dependent: S1=Caspian, ASB2=Geneva
-AMD V					16	6	Caspian/Geneva					45	n/a
-AMD Turion(tm) II [NP]			16	6	Caspian						45	S1
-AMD Athlon(tm) II [NP]			16	6	Caspian						45	S1
-AMD Phenom(tm) II [NPX]			16	6	Caspian						45	S1
-AMD Phenom(tm) II [NPX]			16	5	Champlain					45	S1
-AMD Athlon(tm) II Neo			16	6	Geneva						45	ASB2
-AMD Turion(tm) II Neo			16	6	Geneva						45	ASB2
-AMD Engineering Sample			16	2	Barcelona (ES) 					65	n/a
-AMD Engineering Sample			16	4	Shanghai (ES)					45	n/a
-AMD Engineering Sample			16	5	Propus (ES)					45	n/a
-AMD Engineering Sample			16	6	Regor (ES)					45	n/a
-AMD Engineering Sample			16	8	Istanbul/Lisbon (ES)				45	n/a
-AMD Engineering Sample			16	9	Magny-Cours (ES)				45	n/a
-AMD Engineering Sample			16	10	Thuban (ES)					45	n/a
+AMD V					16	6	Caspian/Geneva					45
+AMD Turion(tm) II [NP]			16	6	Caspian						45
+AMD Athlon(tm) II [NP]			16	6	Caspian						45
+AMD Phenom(tm) II [NPX]			16	6	Caspian						45
+AMD Phenom(tm) II [NPX]			16	5	Champlain					45
+AMD Athlon(tm) II Neo			16	6	Geneva						45
+AMD Turion(tm) II Neo			16	6	Geneva						45
 #*******************************************************************************************************************************************
 # AMD Family 11h (Griffin)
-# Name					Family	Model	Codename					Node	Package
-AMD Turion(tm) X2			17	3	Lion						65	S1
-AMD Athlon(tm) X2			17	3	Lion						65	S1
-AMD Athlon(tm) QI			17	3	Sable						65	S1	
-AMD Sempron(tm) X2			17	3	Lion						65	S1
-AMD Sempron(tm) SI			17	3	Sable						65	S1
+# Name					Family	Model	Codename					Node
+AMD Turion(tm) X2			17	3	Lion						65
+AMD Athlon(tm) X2			17	3	Lion						65
+AMD Athlon(tm) QI			17	3	Sable						65
+AMD Sempron(tm) X2			17	3	Lion						65
+AMD Sempron(tm) SI			17	3	Sable						65
+#*******************************************************************************************************************************************
+# AMD Family 12h (Llano)
+# Name
+AMD A4-3[0-9]*MX APU			18	1	Llano						32
+AMD A6-3[0-9]*MX APU			18	1	Llano						32
+AMD A8-3[0-9]*MX APU			18	1	Llano						32
+AMD E2-3[0-9]*MX APU			18	1	Llano						32
+AMD A4-3[0-9]* APU			18	1	Llano						32
+AMD A6-3[0-9]* APU			18	1	Llano						32
+AMD A8-3[0-9]* APU			18	1	Llano						32
+AMD E2-3[0-9]* APU			18	1	Llano						32
+AMD Athlon(tm) II X2 2			18	1	Llano						32
+AMD Athlon(tm) II X4 6			18	1	Llano						32
+AMD Sempron(tm) II X2 1			18	1	Llano						32
+#*******************************************************************************************************************************************
+# AMD Family 14h (Bobcat)
+# Name
+AMD C							20	1	Ontario				40
+AMD E							20	1	Zacate				40
+AMD Z							20	1	Hondo				40
+AMD C							20	2	Ontario				40
+AMD E							20	2	Zacate				40
+AMD Z							20	2	Hondo				40
+#*******************************************************************************************************************************************
+# AMD Family 15h (Bulldozer)
+# Models 00h-15h (Bulldozer)
+AMD Opteron(TM) Processor 62[0-9]*[HS]\\?[E]\\?		21	1	Interlagos (Bulldozer)		32
+AMD Opteron(TM) Processor 42[0-9]*[HS]\\?[E]\\?		21	1	Valencia (Bulldozer)		32
+AMD Opteron(TM) Processor 32[0-9]*[HS]\\?[E]\\?		21	1	Zurich (Bulldozer)		32
+AMD FX-[0-9]*						21	1	Zambezi (Bulldozer)		32
+# Models 10h-1Fh (Pildriver)
+AMD 							21	16	Trinity				32
+AMD Opteron(TM) Processor 63[0-9]*[H]\\?[E]\\?		21	2	Abu Dhabi (Piledriver)		32
+AMD Opteron(TM) Processor 43[0-9]*[EH]\\?[E]\\?		21	2	Seoul (Piledriver)		32
+AMD Opteron(TM) Processor 33[0-9]*[EH]\\?[E]\\?		21	2	Delhi (Piledriver)		32
+AMD FX-[0-9]*						21	2	Vishera (Piledriver)		32
+AMD 							21	19	Richland			32
+# 28 nm
+AMD							21	48	Kaveri				28
+AMD							21	56	Godavari			28
+AMD							21	96	Carrizo				28
+#*******************************************************************************************************************************************
+# AMD Family 16h (Jaguar)
+AMD A4-12[05]*						22	0	Temash				28
+AMD A6-1450						22	0	Temash				28
+AMD E1-2[015]*						22	0	Kabini				28
+AMD E2-3000						22	0	Kabini				28
+AMD A4-5000						22	0	Kabini				28
+AMD A6-5200						22	0	Kabini				28
 #*******************************************************************************************************************************************
 # Intel P6
-# many Intel CPUs are available in different packages with the same codename, therefor the package type is often undefinded
-# Name					Family	Model	Codename					Node	Package
-Intel(R) Pentium(R) Pro processor	6	1	P6						n/a	n/a	#500nm or 350nm
-Intel(R) Pentium(R) II processor	6	3	Klamath						350	n/a
-Intel(R) Pentium(R) II processor	6	5	Deschutes					250	n/a
-Intel(R) Celeron(R)			6	6	Covington					250	n/a	
-Intel(R) Pentium(R) III processor	6	7	Katmai						250	n/a
-Intel(R) Pentium(R) III Xeon		6	7	Tanner						250	n/a
-Intel(R) Celeron(R)			6	7	Mendocino					250	n/a
-Intel(R) Pentium(R) III processor	6	8	Coppermine					180	n/a
-Intel(R) Pentium(R) III Xeon		6	8	Cascades					180	n/a
-Intel(R) Celeron(R)			6	8	Coppermine-128					180	n/a
-Mobile Intel(R) Pentium(R) III		6	9	Banias						130	n/a
-Mobile Intel(R) Celeron(R) III		6	9	Banias-512					130	n/a
-Intel(R) Pentium(R) M			6	9	Banias						130	n/a
-Intel(R) Pentium(R) III Xeon		6	10	Cascades					180	n/a
-Intel(R) Pentium(R) III processor	6	11	Tualatin					130	n/a
-Intel(R) Celeron(R)			6	11	Tualatin-256					130	n/a
-Intel(R) Pentium(R) M			6	13	Dothan						90	n/a
-Intel(R) Celeron(R)			6	13	Dothan						90	n/a
-Intel(R) Core(TM) Solo			6	14	Yonah						65	n/a
-Intel(R) Core(TM) Duo			6	14	Yonah						65	n/a
-Intel(R) Pentium(R) Dual		6	14	Yonah						65	n/a
-Intel(R) Celeron			6	14	Yonah						65	n/a
-Genuine Intel(R)			6	14	Yonah						65	n/a
-Mobile Intel(R) Atom(TM) CPU *N2	6	28	Diamondville					45	n/a
-Intel(R) Atom(TM) CPU *N?[23]		6	28	Diamondville					45	n/a
-Intel(R) Atom(TM) CPU *Z5		6	28	Silverthorne					45	n/a
-Mobile Intel(R) Atom(TM) CPU *Z5	6	28	Silverthorne					45	n/a
-Intel(R) Atom(TM) CPU *D[45]		6	28	Pineview					45	n/a
-Mobile Intel(R) Atom(TM) CPU *N4	6	28	Pineview					45	n/a
-Intel(R) Atom(TM) CPU *N4		6	28	Pineview					45	n/a
+# Name					Family	Model	Codename					Node
+Intel(R) Pentium(R) Pro processor	6	1	P6						n/a	#500nm or 350nm
+Intel(R) Pentium(R) II processor	6	3	Klamath						350
+Intel(R) Pentium(R) II processor	6	5	Deschutes					250
+Intel(R) Celeron(R)			6	6	Covington					250
+Intel(R) Pentium(R) III processor	6	7	Katmai						250
+Intel(R) Pentium(R) III Xeon		6	7	Tanner						250
+Intel(R) Celeron(R)			6	7	Mendocino					250
+Intel(R) Pentium(R) III processor	6	8	Coppermine					180
+Intel(R) Pentium(R) III Xeon		6	8	Cascades					180
+Intel(R) Celeron(R)			6	8	Coppermine-128					180
+Mobile Intel(R) Pentium(R) III		6	9	Banias						130
+Mobile Intel(R) Celeron(R) III		6	9	Banias-512					130
+Intel(R) Pentium(R) M			6	9	Banias						130
+Intel(R) Pentium(R) III Xeon		6	10	Cascades					180
+Intel(R) Pentium(R) III processor	6	11	Tualatin					130
+Intel(R) Celeron(R)			6	11	Tualatin-256					130
+Intel(R) Pentium(R) M			6	13	Dothan						90
+Intel(R) Celeron(R)			6	13	Dothan						90
+Intel(R) Core(TM) Solo			6	14	Yonah						65
+Intel(R) Core(TM) Duo			6	14	Yonah						65
+Intel(R) Pentium(R) Dual		6	14	Yonah						65
+Intel(R) Celeron			6	14	Yonah						65
+Genuine Intel(R)			6	14	Yonah						65
+Intel(R) Atom(TM) CPU *N\\?[23]		6	28	Diamondville					45
+Mobile Intel(R) Atom(TM) CPU *N2	6	28	Diamondville					45
+Intel(R) Atom(TM) CPU *Z5		6	28	Silverthorne					45
+Mobile Intel(R) Atom(TM) CPU *Z5	6	28	Silverthorne					45
+Intel(R) Atom(TM) CPU *[DN][45]		6	28	Pineview					45
+Mobile Intel(R) Atom(TM) CPU *N[45]	6	28	Pineview					45
+Intel(R) Atom(TM) CPU *Z6		6	38	Lincroft					45
+Intel(R) Atom(TM) CPU *[DN]2		6	54	Cedarview					32
+Mobile Intel(R) Atom(TM) CPU *N2[68]00	6	54	Cedarview					32
+#Intel(R) Atom(TM) CPU C2350				Avoton						22
+#Intel(R) Atom(TM) CPU C2530				Avoton						22
+#Intel(R) Atom(TM) CPU C2550				Avoton						22
+#Intel(R) Atom(TM) CPU C2730				Avoton						22
+#Intel(R) Atom(TM) CPU C2750				Avoton						22
 #*******************************************************************************************************************************************
 # Intel Netburst
-# many Intel CPUs are available in different packages with the same codename, therefore the package type is often undefinded
 # some Xeon models have identical family and model but different codenames depending on cache size
-# Name					Family	Model	Codename					Node	Package
-Intel(R) Pentium(R) 4			15	0	Willamette					180	n/a
-Intel(R) Celeron			15	0	Willamette-128					180	n/a
-Intel(R) Xeon				15	0	Foster						180	n/a
-Intel(R) Pentium(R) 4			15	1	Willamette					180	n/a
-Intel(R) Celeron			15	1	Willamette-128					180	n/a
-Intel(R) Xeon				15	1	Foster						180	n/a
-Intel(R) Pentium(R) 4 CPU		15	2	Northwood					130	n/a
-Mobile Intel(R) Pentium(R) 4		15	2	Northwood					130	n/a
-Intel(R) Pentium(R) 4 Extreme		15	2	Gallatin					130	n/a
-Intel(R) Celeron			15	2	Northwood-128					130	n/a
+# Name					Family	Model	Codename					Node
+Intel(R) Pentium(R) 4			15	0	Willamette					180
+Intel(R) Celeron			15	0	Willamette-128					180
+Intel(R) Xeon				15	0	Foster						180
+Intel(R) Pentium(R) 4			15	1	Willamette					180
+Intel(R) Celeron			15	1	Willamette-128					180
+Intel(R) Xeon				15	1	Foster						180
+Intel(R) Pentium(R) 4 CPU		15	2	Northwood					130
+Mobile Intel(R) Pentium(R) 4		15	2	Northwood					130
+Intel(R) Pentium(R) 4 Extreme		15	2	Gallatin					130
+Intel(R) Celeron			15	2	Northwood-128					130
 #Prestonia (Xeon DP) kein L3, Gallatin (Xeon DP/MP) 1-4M
-Intel(R) Xeon				15	2	Prestonia/Gallatin				130	n/a
-Intel(R) Pentium(R) 4 CPU		15	3	Prescott					90	n/a
-Mobile Intel(R) Pentium(R) 4		15	3	Prescott					90	n/a
-Intel(R) Pentium(R) 4 Extreme		15	3	Prescott-2M					90	n/a
-Intel(R) Pentium(R) D			15	3	Smithfield					90	n/a
-Intel(R) Celeron			15	3	Prescott-256					90	n/a
+Intel(R) Xeon				15	2	Prestonia/Gallatin				130
+Intel(R) Pentium(R) 4 CPU		15	3	Prescott					90
+Mobile Intel(R) Pentium(R) 4		15	3	Prescott					90
+Intel(R) Pentium(R) 4 Extreme		15	3	Prescott-2M					90
+Intel(R) Pentium(R) D			15	3	Smithfield					90
+Intel(R) Celeron			15	3	Prescott-256					90
 #Nocona (DP) 1M L2, Irwindale (DP) 2M L2, Paxville (DP, Dual-Core) 2x2M L2, Cranford (MP) 1M L2 kein L3, Potomac (MP) 1M L2 + 4-8M L3
-Intel(R) Xeon(R) CPU              	15	3	Nocona/Irwindale/Paxville/Cranford/Potomac	90	n/a
-Intel(R) Xeon(R) CPU *70		15	3	Paxville MP					90	n/a
-Intel(R) Pentium(R) 4 CPU		15	4	Prescott					90	n/a
-Mobile Intel(R) Pentium(R) 4		15	3	Prescott					90	n/a
-Intel(R) Pentium(R) 4 Extreme		15	4	Prescott-2M					90	n/a
-Intel(R) Pentium(R) D			15	4	Smithfield					90	n/a
-Intel(R) Celeron			15	4	Prescott-256					90	n/a
+Intel(R) Xeon(R) CPU              	15	3	Nocona/Irwindale/Paxville/Cranford/Potomac	90
+Intel(R) Xeon(R) CPU *70		15	3	Paxville MP					90
+Intel(R) Pentium(R) 4 CPU		15	4	Prescott					90
+Mobile Intel(R) Pentium(R) 4		15	3	Prescott					90
+Intel(R) Pentium(R) 4 Extreme		15	4	Prescott-2M					90
+Intel(R) Pentium(R) D			15	4	Smithfield					90
+Intel(R) Celeron			15	4	Prescott-256					90
 #Nocona (DP) 1M L2, Irwindale (DP) 2M L2, Paxville (DP, Dual-Core) 2x2M L2, Cranford (MP) 1M L2 kein L3, Potomac (MP) 1M L2 + 4-8M L3
-Intel(R) Xeon(R) CPU              	15	4	Nocona/Irwindale/Paxville/Cranford/Potomac	90	n/a
-Intel(R) Xeon(R) CPU *70		15	4	Paxville					90	n/a
-Intel(R) Pentium(R) 4 CPU		15	6	Cedar Mill					65	n/a
-Mobile Intel(R) Pentium(R) 4		15	6	Cedar Mill					65	n/a
-Intel(R) Pentium(R) 4 Extreme		15	6	Cedar Mill					65	n/a
-Intel(R) Pentium(R) D			15	6	Presler						65	n/a
-Intel(R) Celeron			15	6	Cedar Mill-512					65	n/a
-Intel(R) Xeon(R) CPU *50		15	6	Dempsey						65	n/a
-Intel(R) Xeon(R) CPU *71		15	6	Tulsa						65	n/a
+Intel(R) Xeon(R) CPU              	15	4	Nocona/Irwindale/Paxville/Cranford/Potomac	90
+Intel(R) Xeon(R) CPU *70		15	4	Paxville					90
+Intel(R) Pentium(R) 4 CPU		15	6	Cedar Mill					65
+Mobile Intel(R) Pentium(R) 4		15	6	Cedar Mill					65
+Intel(R) Pentium(R) 4 Extreme		15	6	Cedar Mill					65
+Intel(R) Pentium(R) D			15	6	Presler						65
+Intel(R) Celeron			15	6	Cedar Mill-512					65
+Intel(R) Xeon(R) CPU *50		15	6	Dempsey						65
+Intel(R) Xeon(R) CPU *71		15	6	Tulsa						65
 #*******************************************************************************************************************************************
 # Intel Core/Nehalem
-# many Intel CPUs are available in different packages with the same codename, therefor the package type is often undefinded
-# Name					Family	Model	Codename					Node	Package
-Intel(R) Core(TM)2 Solo			6	15	Merom						65	n/a
-Intel(R) Core(TM)2 CPU *4		6	15	Allendale					65	775
-Intel(R) Core(TM)2 CPU *6		6	15	Conroe						65	775
-Intel(R) Core(TM)2 Duo CPU *E4		6	15	Allendale					65	775
-Intel(R) Core(TM)2 Duo CPU *E6		6	15	Conroe						65	775
-Intel(R) Core(TM)2 Duo CPU *[LTU][57]	6	15	Merom						65	n/a
-Intel(R) Core(TM)2 CPU *[LTU][57]	6	15	Merom						65	n/a
-Intel(R) Core(TM)2 Quad CPU    Q6	6	15	Kentsfield					65	775
+# Name					Family	Model	Codename					Node
+Intel(R) Core(TM)2 Solo			6	15	Merom						65
+Intel(R) Core(TM)2 CPU *4		6	15	Allendale					65
+Intel(R) Core(TM)2 CPU *6		6	15	Conroe						65
+Intel(R) Core(TM)2 Duo CPU *E4		6	15	Allendale					65
+Intel(R) Core(TM)2 Duo CPU *E6		6	15	Conroe						65
+Intel(R) Core(TM)2 Duo CPU *[LTU][57]	6	15	Merom						65
+Intel(R) Core(TM)2 CPU *[LTU][57]	6	15	Merom						65
+Intel(R) Core(TM)2 Quad CPU    Q6	6	15	Kentsfield					65
 #desktop
-Intel(R) Core(TM)2 Extreme CPU X6	6	15	Conroe						65	775
+Intel(R) Core(TM)2 Extreme CPU X6	6	15	Conroe						65
 #mobile
-Intel(R) Core(TM)2 Extreme CPU X7	6	15	Merom						65	n/a
-Intel(R) Core(TM)2 Extreme CPU Q6	6	15	Kentsfield					65	775
-Intel(R) Pentium(R) Dual CPU   E2	6	15	Allendale					65	775
-Intel(R) Pentium(R) Dual CPU   T2	6	15	Merom						65	n/a
-Intel(R) Celeron(R) CPU *[24]		6	15	Conroe-L					65	775
-Intel(R) Celeron(R) CPU *E		6	15	Allendale					65	775
-Intel(R) Celeron(R) CPU *[T5]		6	15	Merom						65	n/a
-Intel(R) Celeron(R)			6	22	Merom						65	n/a
-Intel(R) Core(TM) Solo			6	22	Merom						65	n/a
-Intel(R) Core(TM)2 Solo			6	23	Penryn-3M					45	n/a
-Intel(R) Core(TM)2 Duo CPU *E7		6	23	Wolfdale-3M					45	775
-Intel(R) Core(TM)2 Duo CPU *E8		6	23	Wolfdale					45	775
-Intel(R) Core(TM)2 Duo CPU *[LPT]9	6	23	Penryn						45	n/a
-Intel(R) Core(TM)2 Duo CPU *[PT]8	6	23	Penryn-3M					45	n/a
-Intel(R) Core(TM)2 Duo CPU *P7		6	23	Penryn-3M					45	n/a
-Intel(R) Core(TM)2 Duo CPU *U9		6	23	Penryn-3M					45	n/a
-Intel(R) Core(TM)2 Quad CPU *Q8		6	23	Yorkfield-4M					45	775
-Intel(R) Core(TM)2 Quad CPU *Q9		6	23	Yorkfield					45	775
+Intel(R) Core(TM)2 Extreme CPU X7	6	15	Merom						65
+Intel(R) Core(TM)2 Extreme CPU Q6	6	15	Kentsfield					65
+Intel(R) Pentium(R) Dual CPU   E2	6	15	Allendale					65
+Intel(R) Pentium(R) Dual CPU   T2	6	15	Merom						65
+Intel(R) Celeron(R) CPU *[24]		6	15	Conroe-L					65
+Intel(R) Celeron(R) CPU *E		6	15	Allendale					65
+Intel(R) Celeron(R) CPU *[T5]		6	15	Merom						65
+Intel(R) Celeron(R)			6	22	Merom						65
+Intel(R) Core(TM) Solo			6	22	Merom						65
+Intel(R) Core(TM)2 Solo			6	23	Penryn-3M					45
+Intel(R) Core(TM)2 Duo CPU *E7		6	23	Wolfdale-3M					45
+Intel(R) Core(TM)2 Duo CPU *E8		6	23	Wolfdale					45
+Intel(R) Core(TM)2 Duo CPU *[LPT]9	6	23	Penryn						45
+Intel(R) Core(TM)2 Duo CPU *[PT]8	6	23	Penryn-3M					45
+Intel(R) Core(TM)2 Duo CPU *P7		6	23	Penryn-3M					45
+Intel(R) Core(TM)2 Duo CPU *U9		6	23	Penryn-3M					45
+Intel(R) Core(TM)2 Quad CPU *Q8		6	23	Yorkfield-4M					45
+Intel(R) Core(TM)2 Quad CPU *Q9		6	23	Yorkfield					45
 #mobile Dual Core Extreme Prozessoren
-Intel(R) Core(TM)2 Extreme CPU X9	6	23	Penryn						45	n/a
+Intel(R) Core(TM)2 Extreme CPU X9	6	23	Penryn						45
 #Quad Core Extreme CPUs, Desktop und mobile
-Intel(R) Core(TM)2 Extreme CPU Q9	6	23	Yorkfield					45	n/a
-Intel(R) Pentium(R) Dual CPU *E[56]	6	23	Wolfdale-2M					45	775
-Intel(R) Celeron(R) CPU *E3		6	23	Wolfdale-1M					45	775
-Intel(R) Celeron(R) CPU *T3		6	23	Penryn-1M					45	n/a
-#Nehalem
-Intel(R) Core(TM) i7 CPU *9		6	26	Bloomfield					45	1366
-Intel(R) Core(TM) i7 CPU *8		6	30	Lynnfield					45	1156
-Intel(R) Core(TM) i5 CPU *7		6	30	Lynnfield					45	1156
-#Westmere
-Intel(R) Core(TM) i7 CPU *9		6	44	Gulftown					32	1366
-Intel(R) Core(TM) i5 CPU *6		6	37	Clarkdale					32	1156
-Intel(R) Core(TM) i3 CPU *5		6	37	Clarkdale					32	1156
-Intel(R) Pentium(R)			6	37	Clarkdale					32	1156
+Intel(R) Core(TM)2 Extreme CPU Q9	6	23	Yorkfield					45
+Intel(R) Pentium(R) Dual CPU *E[56]	6	23	Wolfdale-2M					45
+Intel(R) Celeron(R) CPU *E3		6	23	Wolfdale-1M					45
+Intel(R) Celeron(R) CPU *T3		6	23	Penryn-1M					45
 #mobile Nehalem 9**XM/8**QM/7**QM
-Intel(R) Core(TM) i7 CPU *[7-9]		6	30	Clarksfield					45	n/a
-#mobile Westmere 6**UM/6**LM, 5**UM/5**LM, 4**UM/4**LM, 3**UM/3**LM, 6**M, 5**M, 4**M., 3**M
-Intel(R) Core(TM) i7 CPU *6		6	37	Arrandale					32	n/a
-Intel(R) Core(TM) i5 CPU *[45]		6	37	Arrandale					32	n/a
-Intel(R) Core(TM) i3 CPU *3		6	37	Arrandale					32	n/a
-Intel(R) Xeon(R) CPU *30		6	15	Conroe						65	775
-Intel(R) Xeon(R) CPU *[LEX]31		6	23	Wolfdale-UP					45	775
-Intel(R) Xeon(R) CPU *[LEX]32		6	15	Kentsfield					65	775
-Intel(R) Xeon(R) CPU *[LEX]33		6	23	Yorkfield-UP					45	775
-Intel(R) Xeon(R) CPU *[LEXW]34		6	30	Lynnfield					45	1156
-Intel(R) Xeon(R) CPU *[LEXW]35		6	26	Bloomfield					45	1366
-Intel(R) Xeon(R) CPU *[EL]C35		6	30	Jasper Forest					45	n/a
-Intel(R) Celeron(R) CPU *P1		6	30	Jasper Forest					45	n/a
-Intel(R) Xeon(R) CPU *51		6	15	Woodcrest					65	771
-Intel(R) Xeon(R) CPU *[LEX]52		6	23	Wolfdale-DP					45	771
-Intel(R) Xeon(R) CPU *[LEX]53		6	15	Clovertown					65	771
-Intel(R) Xeon(R) CPU *[LEX]54		6	23	Harpertown					45	771
-Intel(R) Xeon(R) CPU *[LEXW]55		6	26	Gainestown					45	1366
-Intel(R) Xeon(R) CPU *[LE]C55		6	30	Jasper Forest					45	n/a
-Intel(R) Xeon(R) CPU *[LEXW]56		6	44	Westmere-EP					32	1366
-Intel(R) Xeon(R) CPU *E72		6	15	Tigerton-DC					65	604
-Intel(R) Xeon(R) CPU *[LEX]73		6	15	Tigerton					65	604
-Intel(R) Xeon(R) CPU *[LEX]74		6	23	Dunnington					45	604
-Intel(R) Xeon(R) CPU *[EX]75		6	46	Beckton						45	1567
-Intel(R) Xeon(R) CPU *E65		6	46	Beckton						45	1567
+Intel(R) Core(TM) i7 CPU *[7-9][0-9]*[XQ]\\?[ME]	6	30	Clarksfield					45
+#Nehalem
+Intel(R) Core(TM) i7 CPU *9		6	26	Bloomfield					45
+Intel(R) Core(TM) i7 CPU *8		6	30	Lynnfield					45
+Intel(R) Core(TM) i5 CPU *7		6	30	Lynnfield					45
+Intel(R) Core(TM) i7 CPU 		6	37	Arrandale					32
+Intel(R) Core(TM) i5 CPU 		6	37	Arrandale					32
+Intel(R) Core(TM) i3 CPU 		6	37	Arrandale					32
+Intel(R) Celeron(R) CPU			6	37	Arrandale					32
+#Westmere
+Intel(R) Core(TM) i7 CPU *9		6	44	Gulftown					32
+Intel(R) Core(TM) i5 CPU *6		6	37	Clarkdale					32
+Intel(R) Core(TM) i3 CPU *5		6	37	Clarkdale					32
+Intel(R) Pentium(R)			6	37	Clarkdale					32
+#Sandy-Bridge
+Intel(R) Core(TM) i[357]-2		6	42	Sandy-Bridge					32
+Intel(R) Pentium(R)			6	42	Sandy-Bridge					32
+Intel(R) Celeron(R)			6	42	Sandy-Bridge					32
+Intel(R) Core(TM) i7-3[89]		6	45	Sandy-Bridge-E					32
+#Ivy-Bridge
+Intel(R) Core(TM) i[357]-3		6	58	Ivy-Bridge					22
+Intel(R) Core(TM) i7-4[89]		6	62	Ivy-Bridge-E					22
+#Haswell
+Intel(R) Core(TM) i[357]-4		6	60	Haswell						22
+Intel(R) Core(TM) i[357]-4		6	70	Haswell						22
+Intel(R) Core(TM) i[357]-4		6	69	Haswell						22
+Intel(R) Pentium(R)			6	60	Haswell						22
+Intel(R) Celeron(R)			6	60	Haswell						22
+Intel(R) Pentium(R) 3[0-9]*[U]		6	69	Haswell						22
+Intel(R) Celeron(R) 2[0-9]*[U]		6	69	Haswell						22
+Intel(R) Core(TM) i7-5[89]		6	63	Haswell-E					22
+#Broadwell
+Intel(R) Core(TM)			6	61	Broadwell					14
+Intel(R) Core(TM)			6	71	Broadwell					14
+Intel(R) Core(TM) i7-6[89]		6	79	Broadwell-E					14
+#Skylake
+Intel(R) Core(TM)			6	78	Skylake						14
+Intel(R) Pentium(R)			6	78	Skylake						14
+Intel(R) Celeron(R)			6	78	Skylake						14
+Intel(R) Core(TM) i[357]-6		6	94	Skylake						14
+Intel(R) Pentium(R) G4			6	94	Skylake						14
+Intel(R) Celeron(R) G3			6	94	Skylake						14
+#Xeon
+Intel(R) Xeon(R) CPU *30		6	15	Conroe						65
+Intel(R) Xeon(R) CPU *[LEX]31		6	23	Wolfdale-UP					45
+Intel(R) Xeon(R) CPU *[LEX]32		6	15	Kentsfield					65
+Intel(R) Xeon(R) CPU *[LEX]33		6	23	Yorkfield-UP					45
+Intel(R) Xeon(R) CPU *[LEXW]34		6	30	Lynnfield					45
+Intel(R) Xeon(R) CPU *[LEXW]35		6	26	Bloomfield					45
+Intel(R) Xeon(R) CPU *[EL]C35		6	30	Jasper Forest					45
+Intel(R) Celeron(R) CPU *P1		6	30	Jasper Forest					45
+Intel(R) Xeon(R) CPU *51		6	15	Woodcrest					65
+Intel(R) Xeon(R) CPU *[LEX]52		6	23	Wolfdale-DP					45
+Intel(R) Xeon(R) CPU *[LEX]53		6	15	Clovertown					65
+Intel(R) Xeon(R) CPU *[LEX]54		6	23	Harpertown					45
+Intel(R) Xeon(R) CPU *[LEXW]55		6	26	Gainestown					45
+Intel(R) Xeon(R) CPU *[LE]C55		6	30	Jasper Forest					45
+Intel(R) Xeon(R) CPU *[LEXW]56		6	44	Westmere-EP					32
+Intel(R) Xeon(R) CPU *E72		6	15	Tigerton-DC					65
+Intel(R) Xeon(R) CPU *[LEX]73		6	15	Tigerton					65
+Intel(R) Xeon(R) CPU *[LEX]74		6	23	Dunnington					45
+Intel(R) Xeon(R) CPU *[EX]75		6	46	Beckton						45
+Intel(R) Xeon(R) CPU *E65		6	46	Beckton						45
+Intel(R) Xeon(R) CPU *E3		6	42	Sandy-Bridge					32
+Intel(R) Xeon(R) CPU *E5		6	45	Sandy-Bridge-EP					32
+Intel(R) Xeon(R) CPU *E7		6	47	Westmere-EX					32
+Intel(R) Xeon(R) CPU *E3-12[0-9]*[L]\\? v2	6	58	Ivy-Bridge				22
+Intel(R) Xeon(R) CPU *E3-12[0-9]*[L]\\? v3	6	60	Haswell					22
+Intel(R) Xeon(R) CPU *E3-12[0-9]*[L]\\? v4	6	71	Broadwell				14
+Intel(R) Xeon(R) CPU *E3-12[0-9]*[L]\\? v5	6	94	Skylake					14
+Intel(R) Xeon(R) CPU *E5		6	62	Ivy-Bridge-EP					22
+Intel(R) Xeon(R) CPU *E7		6	62	Ivy-Bridge-EX					22
+Intel(R) Xeon(R) CPU *E[57]		6	63	Haswell-EP					22
+Intel(R) Xeon(R) CPU *E[57]		6	79	Broadwell-EP					14
+Intel(R) Xeon Phi(TM)			6	87	Knights Landing					14
 #*******************************************************************************************************************************************
-#TODO
-#Via CPUs
-#Itanium
-#Sandy Bridge
-#Bulldozer, Llano, Ontario

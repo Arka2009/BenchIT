@@ -1,5 +1,5 @@
-#define CPU_DATA_COUNT 302
-#define ARCH_SHORT_COUNT 70
+#define CPU_DATA_COUNT 345
+#define ARCH_SHORT_COUNT 100
 
 typedef struct {
 	const char * name;
@@ -13,7 +13,6 @@ typedef struct {
 	const int model;
 	const char * codename;
 	const int node;
-	const char * package;
 } info_t;
 
 extern const info_t cpu_data[];

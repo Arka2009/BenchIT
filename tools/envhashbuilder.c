@@ -3,7 +3,7 @@
  * Contact: developer@benchit.org
  *
  * $Id: envhashbuilder.c 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/envhashbuilder.c $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/envhashbuilder.c $
  * For license details see COPYING in the package base directory
  *******************************************************************/
 /* creates the environmenthash-sourcecode-file out of a template.
@@ -27,7 +27,7 @@
 */
 #include "stringlib.h"
 
-int isEnvEntry(const char *);
+int isEnvEntry( const char * );
 
 /**
 * Brief create the environmenthash-sourcecode-file out of a template.
@@ -38,7 +38,7 @@ int isEnvEntry(const char *);
 * @param(in) argv arguments given by command line
 * @returns 0, if succesful
 */
-int main(int argc, char **argv)
+int main( int argc, char **argv )
 {
    FILE *efp, *tfp, *ofp, *tfpj, *ofpj;
    char buf[100000];
@@ -50,95 +50,95 @@ int main(int argc, char **argv)
    const char *templateFileNameJava = "BIEnvHash.template.java";
    const char *outFileNameJava = "../jbi/BIEnvHash.java";
 
-   if ((efp = fopen(envFileName, "r")) == NULL)
+   if ( ( efp = fopen( envFileName, "r" ) ) == NULL )
    {
-      fprintf(stderr, "File %s couldn't be opened for reading!\n",
-         envFileName);
+      fprintf( stderr, "File %s couldn't be opened for reading!\n",
+         envFileName );
       return 1;
    }
-   if ((ofp = fopen(outFileName, "w")) == NULL)
+   if ( ( ofp = fopen( outFileName, "w" ) ) == NULL )
    {
-      fprintf(stderr, "File %s couldn't be opened for writing!\n",
-         outFileName);
+      fprintf( stderr, "File %s couldn't be opened for writing!\n",
+         outFileName );
       return 1;
    }
-   if ((ofpj = fopen(outFileNameJava, "w")) == NULL)
+   if ( ( ofpj = fopen( outFileNameJava, "w" ) ) == NULL )
    {
-      fprintf(stderr, "File %s couldn't be opened for writing!\n",
-         outFileNameJava);
+      fprintf( stderr, "File %s couldn't be opened for writing!\n",
+         outFileNameJava );
       return 1;
    }
 
    /* create bienvhash.c */
-   if ((tfp = fopen(templateFileName, "r")) == NULL)
+   if ( ( tfp = fopen( templateFileName, "r" ) ) == NULL )
    {
-      fprintf(stderr, "File %s couldn't be opened for reading!\n",
-         templateFileName);
+      fprintf( stderr, "File %s couldn't be opened for reading!\n",
+         templateFileName );
       return 1;
    }
    /* copy template content into bienvhash.c */
    buf[0] = 0;
-   while (fgets(buf, sizeof(buf) - 1, tfp) != (char *)0)
+   while ( fgets( buf, sizeof( buf ) - 1, tfp ) != (char *)0 )
    {
-      fprintf(ofp, "%s", buf);
+      fprintf( ofp, "%s", buf );
    }
-   fclose(tfp);
+   fclose( tfp );
    /* create BIEnvHash.java */
-   if ((tfpj = fopen(templateFileNameJava, "r")) == NULL)
+   if ( ( tfpj = fopen( templateFileNameJava, "r" ) ) == NULL )
    {
-      fprintf(stderr, "File %s couldn't be opened for reading!\n",
-         templateFileNameJava);
+      fprintf( stderr, "File %s couldn't be opened for reading!\n",
+         templateFileNameJava );
       return 1;
    }
    /* copy template content into bienvhash.c */
    buf[0] = 0;
-   while (fgets(buf, sizeof(buf) - 1, tfpj) != (char *)0)
+   while ( fgets( buf, sizeof( buf ) - 1, tfpj ) != (char *)0 )
    {
-      fprintf(ofpj, "%s", buf);
+      fprintf( ofpj, "%s", buf );
    }
-   fclose(tfpj);
+   fclose( tfpj );
 
    /* append fillTable code */
-   while (fgets(line, STR_LEN, efp) != NULL)
+   while ( fgets( line, STR_LEN, efp ) != NULL )
    {
-      if (isEnvEntry(line))
+      if ( isEnvEntry( line ) )
       {
-         int eqPos = indexOf(line, '=', 0);
+         int eqPos = indexOf( line, '=', 0 );
          /* remove EOL at end of line */
-         if (line[length(line)] == '\n')
+         if ( line[length( line )] == '\n' )
          {
-            substring(line, line, 0, length(line));
+            substring( line, line, 0, length( line ) );
          }
          /* extract key and value for hashtable */
-         substring(line, key, 0, eqPos);
-         substring(line, value, eqPos + 1, length(line) + 1);
+         substring( line, key, 0, eqPos );
+         substring( line, value, eqPos + 1, length( line ) + 1 );
          /* remove leading and trailing " and ' */
-         trimChar(value, value, '\'');
-         trimChar(value, value, '"');
+         trimChar( value, value, '\'' );
+         trimChar( value, value, '"' );
          /* replace all occurances of \ by \\ */
-         escapeChar(value, value, '\\');
+         escapeChar( value, value, '\\' );
          /* replace all occurances of " by \" */
-         escapeChar(value, value, '"');
+         escapeChar( value, value, '"' );
          /* append to output file */
-         sprintf(outLine, "   bi_put(\"%s\", \"%s\");\n", key, value);
-         fprintf(ofp, "%s", outLine);
-         fprintf(ofpj,"   %s", outLine);
-         fflush(stderr);
-         fflush(ofp);
-         fflush(ofpj);
+         sprintf( outLine, "   bi_put( \"%s\", \"%s\" );\n", key, value );
+         fprintf( ofp, "%s", outLine );
+         fprintf( ofpj,"   %s", outLine );
+         fflush( stderr );
+         fflush( ofp );
+         fflush( ofpj );
       }
    }
    /* fileversion code here */
    /* very last line closing the function */
-   sprintf(outLine, "}\n");
-   fprintf(ofp, "%s", outLine);
-   fprintf(ofpj, "   %s%s", outLine, outLine);
-   fflush(stderr);
-   fflush(ofp);
-   fflush(ofpj);
-   fclose(ofp);
-   fclose(ofpj);
-   fclose(efp);
+   sprintf( outLine, "}\n" );
+   fprintf( ofp, "%s", outLine );
+   fprintf( ofpj, "   %s%s", outLine, outLine );
+   fflush( stderr );
+   fflush( ofp );
+   fflush( ofpj );
+   fclose( ofp );
+   fclose( ofpj );
+   fclose( efp );
    return 0;
 }
 
@@ -147,13 +147,13 @@ int main(int argc, char **argv)
 * @param(in) line is this an environment entry? check this input
 * @returns 1, if the line starts with a letter and it contains a '='
 */
-int isEnvEntry(const char *line)
+int isEnvEntry( const char *line )
 {
    int retval = 0;
-   if (line == 0) return retval;
+   if ( line == 0 ) return retval;
    /* check for letter and equals */
-   if ((line[0] >= 'A') && (line[0] <= 'z')
-        && indexOf(line, '=', 0) > 0)
+   if ( ( line[0] >= 'A' ) && ( line[0] <= 'z' )
+        && indexOf( line, '=', 0 ) > 0 )
    {
       retval = 1;
    }

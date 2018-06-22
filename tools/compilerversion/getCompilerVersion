@@ -4,7 +4,7 @@
 # Contact: developer@benchit.org
 #
 # $Id: getCompilerVersion 1 2009-09-11 12:26:19Z william $
-# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/compilerversion/getCompilerVersion $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/compilerversion/getCompilerVersion $
 # For license details see COPYING in the package base directory
 #####################################################################
 # This is a shell script for those compilers (mostly fortran)

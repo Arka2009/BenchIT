@@ -4,13 +4,13 @@
 # Contact: developer@benchit.org
 #
 # $Id: work_script.pl 1 2009-09-11 12:26:19Z william $
-# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/perl/0/0/0/work_script.pl $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/perl/0/0/0/work_script.pl $
 #####################################################################
 # Kernel: perl kernel skeleton
 #####################################################################
 
 use Getopt::Long;
-#use DBI;
+use DBI;
 
 # this function loads the availiable parameters
 GetOptions( 
@@ -45,3 +45,4 @@ else
 {
 	print "Invalid measurementmode supplied!\n";
 }
+

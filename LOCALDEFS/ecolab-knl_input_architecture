@@ -1,0 +1,172 @@
+#!/bin/sh
+#####################################################################
+# BenchIT - Performance Measurement for Scientific Applications
+# Contact: developer@benchit.org
+#
+# $Id: PROTOTYPE_input_architecture 1 2009-09-11 12:26:19Z william $
+# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/LOCALDEFS/PROTOTYPE_input_architecture $
+# For license details see COPYING in the package base directory
+#####################################################################
+# Architectural information about your system, used to compare your 
+# system to others. 
+#####################################################################
+
+#
+# feel free to insert your data
+#
+# quotation marks have to be `escaped'!!!
+#
+# Note: The examples are from very different systems.
+#
+
+
+# Manufacturer of the mainboard, for example: "MSI"
+mainboardmanufacturer=""
+
+# Type of the mainboard without manufacturer's name, for example: "845PE Max3 (800 Edition)"
+mainboardtype=""
+
+# Chipset of the mainboard, for example: "Intel i845PE"
+mainboardchipset=""
+
+# Total number of Processors
+numberofprocessors=""
+
+# Name of the processor, for example: "Intel Pentium 4"
+processorname=""
+
+# Codename according to manufacturer roadmap, for example: "Montecito"
+codename=""
+
+# Processor Serial Number, if available
+processorserialnumber=""
+
+# Processor version, for example: "x86, Family 6, Model 5, Stepping 1"
+processorversion=""
+
+# Instruction Set Architecture (ISA) of the processor, for example: "IA-32" or "MIPS"
+processorisaset=""
+
+# Several processors are using exact descriptions of their ISA level, for example: "IV" (for MIPS)
+processorisalevel=""
+
+# Extensions of the ISA with an additional number; extendable
+# for example: 
+# processorisaextension1="MMX"
+# processorisaextension2="SSE"
+# processorisaextension3="SSE2"
+processorisaextension1="FPU"
+processorisaextension2="MMX"
+processorisaextension3="SSE"
+processorisaextension4="SSE2"
+processorisaextension5="SSE2"
+processorisaextension6="SSE3"
+processorisaextension7="SSSE3"
+processorisaextension8="SSE4.1"
+processorisaextension9="AVX"
+processorisaextension10="FMA"
+processorisaextension11="AES"
+processorisaextension12="CX8"
+processorisaextension13="CX16"
+processorisaextension14="POPCNT"
+processorisaextension15="CLFLUSH(64 Byte lines)"
+processorisaextension16="RDTSC(26 cycles latency)"
+processorisaextension17="MONITOR"
+processorisaextension18="MTRR"
+processorisaextension19="AVX2"
+processorisaextension20="AVX512"
+processorisaextension21="NX"
+processorisaextension22="X86_64"
+processorisaextension23="APERF/MPERF"
+processorisaextension24="CPUID"
+processorisaextension25="SMT"
+
+
+# Clock rate of the processor in Hz, for example: 3060000000
+processorclockrate=""
+
+# Instruction length in bit, for example: 32 [for RISC] or 0 [for CISC or variable length]
+instructionlength=""
+
+# Processor word length or Word format or xx-bit architecture in bit, for example: 32 
+processorwordlength=""
+
+# Number of instructions issued to the functional units per clock, for example: 6
+instructionissue=""
+
+# Number of separate integer units, for example: 2
+integerunits=""
+
+# Number of separate floating point units, for example: 3
+floatingpointunits=""
+
+# Number of separate load/store units, for example: 1
+loadstoreunits=""
+
+# Support of multithreading, for example: 1 [0 for no | 1 for yes] [Hyperthreading --> 1]
+multithreading=1
+
+# Number of physical cores per CPU
+numberofcorespercpu=64
+
+# L1 instruction cache size in byte, for example: 12288 
+level1icachesize=32768
+
+# L1 data cache size in byte, for example: 8192
+level1dcachesize=32768
+
+# L2 cache size in byte, for example: 524288
+level2cachesize=1048576
+
+
+# L3 cache size in byte, for example:  33554432
+level3cachesize=""
+
+# L1 instruction cache organization, for example: "Execution Trace Cache"
+level1icachetype="8-way set associative, 64 Byte cachelines, shared among 4 cpus"
+
+
+# L1 data cache organization, for example: "4-way set-associative, write-through, dual ported"
+level1dcachetype="8-way set associative, 64 Byte cachelines, shared among 4 cpus"
+
+# L2 cache organization, for example: "8-way set-associative, cache line size 32 words"
+level2cachetype="16-way set associative, 64 Byte cachelines, shared among 4 cpus"
+
+# L3 cache organization, for example: "8-way set-associative, cache line size 128 words with 4 128-byte sectors"
+level3cachetype=""
+
+# L2 cache location, for example: "on-chip" or "on-board"
+level2cachelocation="on-chip"
+
+# Support of prefetching, for example: 1 [0 for no | 1 for yes]
+prefetching=0
+
+# Support of preloading, for example: 1 [0 for no | 1 for yes]
+preloading=0
+
+# Clock rate of the processor side bus in Hz, for example: 133000000 
+processorsidebusclockrate=""
+
+# Clock rate of the backside bus (connection to the on-chip L2-cache) in Hz, for example: 200000000
+backsideclockrate=""
+
+# Structure details of the technology in m, for example: 0.000000130
+technologylevel="0.000000014"
+
+# Memory chip type, for example: "PC-100 SDRAM" or "RIMM-4200"
+memorychiptype=""
+
+# Memory bus type, for example: "SDRAM bus" or "RAMBUS"
+memorybustype=""
+
+# Clock rate of the memory bus in Hz, for example: 100000000
+memorybusclockrate=""
+
+# Total size of available memory in Byte
+memorysize=""
+
+# Additionaly comment for your system (e.g. Hyper Threading enabled/disabled)
+ systemcomment=""
+
+endofarchitecture
+####################################################

@@ -1,0 +1,84 @@
+#####################################################################
+# BenchIT - Performance Measurement for Scientific Applications
+# Contact: benchit@zih.tu-dresden.de
+#
+# Last change by: $Author: molka $
+# $Revision: 1.1 $
+# $Date: 2008/07/23 14:14:47 $
+#####################################################################
+
+#BENCHIT_RUN_MAX_MEMORY
+#BENCHIT_NUM_PROCESSES
+#BENCHIT_NUM_CPUS
+#BENCHIT_RUN_COREDUMPLIMIT
+#BENCHIT_RUN_REDIRECT_CONSOLE
+#BENCHIT_RUN_CLEAN
+#BENCHIT_RUN_TEST
+#BENCHIT_RUN_QUEUETIMELIMIT
+#BENCHIT_RUN_USE_MPI
+#BENCHIT_RUN_USE_OPENMP
+#BENCHIT_RUN_EMAIL_ADDRESS
+
+########################################################################
+# FIRST PART: ASSEMBLE COMMAND
+########################################################################
+
+#execute_cmd="numactl --localalloc gdb -x gdb_cmd --args ${BENCHIT_KERNELBINARY} ${BENCHIT_KERNELBINARY_ARGS}"
+execute_cmd="numactl --localalloc ${BENCHIT_KERNELBINARY} ${BENCHIT_KERNELBINARY_ARGS}"
+
+#moved to actual execution as assembling this into the command string
+#confuses the shell (passes redirection as argument to the kernel)
+#if [ -n "${BENCHIT_RUN_REDIRECT_CONSOLE}" ]; then
+#	execute_cmd="${execute_cmd} > ${BENCHIT_RUN_REDIRECT_CONSOLE} 2>&1"
+#fi
+
+########################################################################
+# SECOND PART: SAVE ENVIRONMENT IF NECESSARY
+########################################################################
+
+########################################################################
+# THIRD PART: EXECUTE AND CLEANUP
+########################################################################
+
+if [ "${BENCHIT_RUN_TEST}" != "1" ]; then
+	cd ${BENCHITROOT}
+	if [ -n "${BENCHIT_RUN_REDIRECT_CONSOLE}" ]; then
+		if [ "${BENCHIT_KERNEL_HUGEPAGES}" = "1" ]; then
+      sudo enable_hugepages.sh ${NUM_HUGEPAGES}
+    fi
+		${execute_cmd} > ${BENCHIT_RUN_REDIRECT_CONSOLE} 2>&1
+    if [ "${BENCHIT_KERNEL_HUGEPAGES}" = "1" ]; then
+      sudo disable_hugepages.sh
+    fi
+	else	
+   if [ "${BENCHIT_KERNEL_HUGEPAGES}" = "1" ]; then
+      sudo enable_hugepages.sh ${NUM_HUGEPAGES}
+   fi
+ 	 ${execute_cmd}
+   if [ "${BENCHIT_KERNEL_HUGEPAGES}" = "1" ]; then
+      sudo disable_hugepages.sh
+   fi
+	fi
+	if [ "${BENCHIT_RUN_CLEAN}" = "1" ]; then
+		rm -f ${BENCHIT_KERNELBINARY}
+	fi
+else
+	printf "${execute_cmd}"
+        if [ -n "${BENCHIT_RUN_REDIRECT_CONSOLE}" ]; then
+		printf " > ${BENCHIT_RUN_REDIRECT_CONSOLE} 2>&1"
+	fi
+	printf "\n"
+	if [ "${BENCHIT_RUN_CLEAN}" = "1" ]; then
+		printf "rm -f ${BENCHIT_KERNELBINARY}\n"
+	fi
+fi
+
+###############################################################################
+#  Log-History
+#
+#  $Log: DEFAULT,v $
+#  Revision 1.1  2008/07/23 14:14:47  molka
+#  renamed NOTHING environment to DEFAULT environment, extended standard time limit to one hour
+#
+#
+###############################################################################

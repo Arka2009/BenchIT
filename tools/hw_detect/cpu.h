@@ -50,7 +50,10 @@
 #if ((defined (__x86_64__))||(defined (__x86_64))||(defined (x86_64))||(defined (__i386__))||(defined (__i386))||(defined (i386))||(defined (__i486__))||(defined (__i486))||(defined (i486))||(defined (__i586__))||(defined (__i586))||(defined (i586))||(defined (__i686__))||(defined (__i686))||(defined (i686)))
  /* see x86.c */
  #define __ARCH_X86
-#else
+#elif ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+ /* see arm.c */	
+ #define __ARCH_ARM
+ #else
  /* see generic.c */
  #define __ARCH_UNKNOWN
 #endif
@@ -135,9 +138,15 @@
  extern int get_cpu_vendor(char* vendor, size_t len);
  extern int get_cpu_name(char* name, size_t len);
  extern int get_cpu_codename(char* name, size_t len);
- extern int get_cpu_family();
- extern int get_cpu_model();
- extern int get_cpu_stepping();
+ #if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+ 	extern void get_cpu_family(char* family, size_t len);
+	extern void get_cpu_model(char* model, size_t len);
+	extern void get_cpu_stepping(char* stepping, size_t len);
+ #else
+ 	extern int get_cpu_family();
+	extern int get_cpu_model();
+ 	extern int get_cpu_stepping();
+ #endif
  extern int get_cpu_gate_length();
 
  /**
@@ -145,6 +154,8 @@
   * TODO add cpu parameter
   */
  extern int get_cpu_isa_extensions(char* features, size_t len);
+
+ extern int get_cpu_lwp(char* lwpfeatures, size_t len);
 
  /**
   * tests if a certain feature is supported
@@ -246,6 +257,7 @@
  extern int generic_get_cpu_stepping();
  extern int generic_get_cpu_gate_length();
  extern int generic_get_cpu_isa_extensions(char* features, size_t len);
+ extern int generic_get_cpu_lwp(char* lwpfeatures, size_t len);
  extern unsigned long long generic_get_cpu_clockrate(int check,int cpu);
  extern unsigned long long generic_timestamp();
  extern int generic_num_caches(int cpu);

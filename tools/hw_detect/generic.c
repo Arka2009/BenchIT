@@ -149,11 +149,10 @@ static int match_str(char * mstr, char * pattern, int * n)
 	return -1;
 }
 
-
 /*
  * Wraps glibc regular expression pattern matching
  */
-int regex_match(const char *str, const char *pattern) {
+static int regex_match(const char *str, const char *pattern) {
 	int status;
 	regex_t re;
 
@@ -170,6 +169,31 @@ int regex_match(const char *str, const char *pattern) {
 	return 1;
 } 
 
+/**
+ * reads the file from path into buffer
+ */
+static int read_file(char * path, char * buffer, int bsize)
+{
+	FILE * f;
+	long size;
+
+	if((path == NULL) || (buffer == NULL)) return 0;
+	memset(buffer, 0, bsize); bsize--;
+	if((f=fopen(path, "rb")) != NULL)
+	{
+		fseek(f, 0, SEEK_END);
+		size=ftell(f);
+		rewind(f);
+		fread(buffer, 1, (bsize < size) ? bsize : size, f);
+		fclose(f);
+	}
+	else return 0;
+
+	while(*buffer++) if(*buffer == '\n') *buffer = 0;
+
+	return -1;
+}
+
 /* 
  * architecture independent fallback implementations 
  */
@@ -180,27 +204,47 @@ int regex_match(const char *str, const char *pattern) {
 int num_cpus()
 {
    struct dirent **namelist;
-   int ndir, c, num, m;
-   num=sysconf(_SC_NPROCESSORS_CONF);
-   if (num==-1)
-   {
-     /*TODO proc/cpuinfo*/
-     
+   int ndir, c, num=0, m;
+   char tmppath[_HW_DETECT_MAX_OUTPUT];
+   char buf[20];
+
+   /* try sysconf online cpus */
+   num=sysconf(_SC_NPROCESSORS_ONLN);
+
+   /* extract information from sysfs */
+   if (num<=0) { 
      strcpy(path, "/sys/devices/system/cpu/");
      ndir = scandir(path, &namelist, 0, 0);
      if(ndir >= 0)
      {
 	     c = 0;
 	     while(ndir--) {
-		     if(match_str(namelist[ndir]->d_name, "cpu", &m)) c++;
+		     if(match_str(namelist[ndir]->d_name, "cpu", &m)) {
+			strncpy(tmppath, path,sizeof(tmppath));
+			snprintf(buf, sizeof(buf),"cpu%i", m);
+			strcat(tmppath, buf);
+			strcat(tmppath, "/online");
+			read_file(tmppath, output, sizeof(output));
+			if (strncmp(output,"0",1)!=0) {
+				c++;
+			}
+		     }
 		     free(namelist[ndir]);
 	     }
 	     free(namelist);
 	     if(c > 0) num = c;
+	     else num = -1;
      }
    }
-   /*assume 1 if detection fails*/
+
+   /*TODO proc/cpuinfo*/
+
+   /* try sysconf configured cpus */
+   if (num<=0) num=sysconf(_SC_NPROCESSORS_CONF);
+
+   /*assume 1 if all detection methods fail*/
    if (num<1) num=1;
+
    return num;
 }
 
@@ -237,7 +281,6 @@ int set_cpu(int cpu)
     {
       /* test if the CPU is allowed to be used (sched_setaffinity otherwise would overwrite taskset settings) */
       err=sched_getaffinity(0, sizeof(unsigned long long), (cpu_set_t*) &orig_cpu_mask);
-      printf("%8llux\n",mask);
       if ((!err)&&(!(orig_cpu_mask&(1<<cpu)))) return -2;
 
       mask=(1<<cpu);
@@ -277,38 +320,12 @@ int get_cpu()
   return cpu;
 }
 
-/**
- * reads the file from path into buffer
- */
-static int read_file(char * path, char * buffer, int bsize)
-{
-	FILE * f;
-	long size;
-
-	if((path == NULL) || (buffer == NULL)) return 0;
-	memset(buffer, 0, bsize); bsize--;
-	if((f=fopen(path, "rb")) != NULL)
-	{
-		fseek(f, 0, SEEK_END);
-		size=ftell(f);
-		rewind(f);
-		fread(buffer, 1, (bsize < size) ? bsize : size, f);
-		fclose(f);
-	}
-	else return 0;
-
-	while(*buffer++) if(*buffer == '\n') *buffer = 0;
-
-	return -1;
-}
-
-
 /** 
  * tries to determine the physical package, a cpu belongs to
  */
 int get_pkg(int cpu)
 {
-	int pkg;
+	int pkg=0;
 	char buffer[_HW_DETECT_MAX_OUTPUT];
 
 	if ((num_cpus()==1)||(num_packages()==1)) return 0;
@@ -535,6 +552,10 @@ int generic_get_cpu_codename(char* name, size_t len)
 {
 	int i;
 	char tmpname[_HW_DETECT_MAX_OUTPUT];
+	#if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+	char family[_HW_DETECT_MAX_OUTPUT];
+	char model[_HW_DETECT_MAX_OUTPUT];
+	#endif	
 	
 	#if (defined (__ARCH_UNKNOWN))
 		generic_get_cpu_name(tmpname,len);
@@ -544,10 +565,18 @@ int generic_get_cpu_codename(char* name, size_t len)
 
 	for(i=0; i < CPU_DATA_COUNT; i++)
 	{
+	//TODO: Add Support for ARM CPUs (e.g. Tegra - Kal-El, Wayne, Cortex-A15 = Eagle)
+		#if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+		get_cpu_family(family, sizeof(family));
+		get_cpu_model(model,sizeof(model));	
+		strncpy(name, "unknown", len);
+		break;
+		#else
 		if(regex_match(tmpname, cpu_data[i].name) && (get_cpu_family() == cpu_data[i].family) && (get_cpu_model() == cpu_data[i].model)) {
 			strncpy(name, cpu_data[i].codename, len);
 			break;
 		}
+		#endif
 	}
 
 	if (strlen(name) == 0)
@@ -637,14 +666,25 @@ int generic_get_cpu_gate_length()
 {
 	int i, res = -1;
 	char tmpname[_HW_DETECT_MAX_OUTPUT];
+	#if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+	char family[_HW_DETECT_MAX_OUTPUT];
+	char model[_HW_DETECT_MAX_OUTPUT];
+	#endif
 
 	get_cpu_name(tmpname,sizeof(tmpname));
 	for(i=0; i < CPU_DATA_COUNT; i++)
 	{
+		//TODO: add gate length for ARM CPUs
+		#if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+		get_cpu_family(family, sizeof(family));
+		get_cpu_model(model,sizeof(model));	
+		res = 0;
+		#else
 		if(regex_match(tmpname, cpu_data[i].name) && (get_cpu_family() == cpu_data[i].family) && (get_cpu_model() == cpu_data[i].model)) {
 			res = cpu_data[i].node;
 			break;
 		}
+		#endif
 	}
 
 	return res;
@@ -668,7 +708,7 @@ int feature_available(char* feature)
   * additional features (e.g. SSE)
   */
  int generic_get_cpu_isa_extensions(char* features, size_t len){return -1;}  /*TODO /proc/cpuinfo */
-
+ int generic_get_cpu_lwp(char* lwpfeatures, size_t len){return -1;}
 
 unsigned long long generic_get_cpu_clockrate_proccpuinfo_fallback(int cpu)
 {
@@ -813,7 +853,7 @@ int generic_cache_info(int cpu, int id, char* output, size_t len)
 	strncat(tmppath, "level",(_HW_DETECT_MAX_OUTPUT-strlen(tmppath))-1);
 
 	if(read_file(tmppath, tmp, _HW_DETECT_MAX_OUTPUT)) {
-		snprintf(tmp2,tmp2[_HW_DETECT_MAX_OUTPUT], "Level %s", tmp);
+		snprintf(tmp2, _HW_DETECT_MAX_OUTPUT-1, "Level %s", tmp);
 		strncat(output, tmp2,(len-strlen(output))-1);
 	}
 
@@ -821,7 +861,7 @@ int generic_cache_info(int cpu, int id, char* output, size_t len)
 	strncat(tmppath, "type",(_HW_DETECT_MAX_OUTPUT-strlen(tmppath))-1);
 	if(read_file(tmppath, tmp, _HW_DETECT_MAX_OUTPUT)) {
 		if(!strcmp(tmp, "Unified")) {
-			strncpy(tmp2, output,(_HW_DETECT_MAX_OUTPUT-strlen(tmp2))-1);
+			strncpy(tmp2, output,_HW_DETECT_MAX_OUTPUT-1);
 			snprintf(output,len, "%s ", tmp);
 			strncat(output, tmp2,(len-strlen(output))-1);
 		}
@@ -1050,9 +1090,16 @@ int generic_num_packages()
 				strncpy(tmppath, path,sizeof(tmppath));
 				snprintf(buf, sizeof(buf),"cpu%i", m);
 				strcat(tmppath, buf);
-				strcat(tmppath, "/topology/physical_package_id");
-				if(read_file(tmppath, output, sizeof(output)))
-					inc_id_count(atoi(output), &pkg_id_list);
+				strcat(tmppath, "/online");
+				read_file(tmppath, output, sizeof(output));
+				if (strncmp(output,"0",1)!=0) {
+					strncpy(tmppath, path,sizeof(tmppath));
+					snprintf(buf, sizeof(buf),"cpu%i", m);
+					strcat(tmppath, buf);
+					strcat(tmppath, "/topology/physical_package_id");
+					if(read_file(tmppath, output, sizeof(output)))
+						inc_id_count(atoi(output), &pkg_id_list);
+				}
 			}
 			free(namelist[ndir]);
 		}
@@ -1077,24 +1124,31 @@ int generic_num_cores_per_package()
 	{
 		while(ndir--) {
 			if(match_str(namelist[ndir]->d_name, "cpu", &m)) {
-				strcpy(tmppath, path);
-				sprintf(buf, "cpu%i", m);
+				strncpy(tmppath, path,sizeof(tmppath));
+				snprintf(buf, sizeof(buf),"cpu%i", m);
 				strcat(tmppath, buf);
-				strcat(tmppath, "/topology/physical_package_id");
-				read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
-				m = atoi(output);
-				if(pkg_id_tocount == -1) pkg_id_tocount = m;
+				strcat(tmppath, "/online");
+				read_file(tmppath, output, sizeof(output));
+				if (strncmp(output,"0",1)!=0) {
+					strcpy(tmppath, path);
+					sprintf(buf, "cpu%i", m);
+					strcat(tmppath, buf);
+					strcat(tmppath, "/topology/physical_package_id");
+					read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
+					m = atoi(output);
+					if(pkg_id_tocount == -1) pkg_id_tocount = m;
 
-				strcpy(tmppath, path);
-				strcat(tmppath, buf);
-				strcat(tmppath, "/topology/core_id");
-				read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
-				n = atoi(output);
+					strcpy(tmppath, path);
+					strcat(tmppath, buf);
+					strcat(tmppath, "/topology/core_id");
+					read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
+					n = atoi(output);
 
-				if(m == pkg_id_tocount) /*FIXME: only counts cores from first package_id that is found, assumes that every package has the same amount of cores*/
-				{
-					//if (num<n+1) num=n+1; //doesn't work if there is a gap in between the ids
-					inc_id_count(n, &core_id_list);
+					if(m == pkg_id_tocount) /*FIXME: only counts cores from first package_id that is found, assumes that every package has the same amount of cores*/
+					{
+						//if (num<n+1) num=n+1; //doesn't work if there is a gap in between the ids
+						inc_id_count(n, &core_id_list);
+					}
 				}
 			}
 			free(namelist[ndir]);
@@ -1122,24 +1176,31 @@ int generic_num_threads_per_core()
 	{
 		while(ndir--) {
 			if(match_str(namelist[ndir]->d_name, "cpu", &m)) {
-				strcpy(tmppath, path);
-				sprintf(buf, "cpu%i", m);
+				strncpy(tmppath, path,sizeof(tmppath));
+				snprintf(buf, sizeof(buf),"cpu%i", m);
 				strcat(tmppath, buf);
-				strcat(tmppath, "/topology/core_id");
-				read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
-				m = atoi(output);
-				if(core_id_tocount == -1) core_id_tocount = m;
+				strcat(tmppath, "/online");
+				read_file(tmppath, output, sizeof(output));
+				if (strncmp(output,"0",1)!=0) {
+					strcpy(tmppath, path);
+					sprintf(buf, "cpu%i", m);
+					strcat(tmppath, buf);
+					strcat(tmppath, "/topology/core_id");
+					read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
+					m = atoi(output);
+					if(core_id_tocount == -1) core_id_tocount = m;
 				
-				strcpy(tmppath, path);
-				strcat(tmppath, buf);
-				strcat(tmppath, "/topology/physical_package_id");
-				read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
-				n = atoi(output);
-				if(pkg_id_tocount == -1) pkg_id_tocount = n;
+					strcpy(tmppath, path);
+					strcat(tmppath, buf);
+					strcat(tmppath, "/topology/physical_package_id");
+					read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
+					n = atoi(output);
+					if(pkg_id_tocount == -1) pkg_id_tocount = n;
 
-				if(m == core_id_tocount && n == pkg_id_tocount) /*FIXME: only counts threads from the first core_id and package_id that are found, assumes that every core has the same amount of threads*/
-				{
-					num++;
+					if(m == core_id_tocount && n == pkg_id_tocount) /*FIXME: only counts threads from the first core_id and package_id that are found, assumes that every core has the same amount of threads*/
+					{
+						num++;
+					}
 				}
 			}
 			free(namelist[ndir]);
@@ -1170,17 +1231,24 @@ int generic_num_threads_per_package()
 	{
 		while(ndir--) {
 			if(match_str(namelist[ndir]->d_name, "cpu", &m)) {
-				strcpy(tmppath, path);
-				sprintf(buf, "cpu%i", m);
+				strncpy(tmppath, path,sizeof(tmppath));
+				snprintf(buf, sizeof(buf),"cpu%i", m);
 				strcat(tmppath, buf);
-				strcat(tmppath, "/topology/physical_package_id");
-				read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
-				m = atoi(output);
-				if(pkg_id_tocount == -1) pkg_id_tocount = m;
+				strcat(tmppath, "/online");
+				read_file(tmppath, output, sizeof(output));
+				if (strncmp(output,"0",1)!=0) {
+					strcpy(tmppath, path);
+					sprintf(buf, "cpu%i", m);
+					strcat(tmppath, buf);
+					strcat(tmppath, "/topology/physical_package_id");
+					read_file(tmppath, output, _HW_DETECT_MAX_OUTPUT);
+					m = atoi(output);
+					if(pkg_id_tocount == -1) pkg_id_tocount = m;
 				
-				if(m == pkg_id_tocount) /*FIXME: only counts threads from first package_id that is found and assumes that every package has the same amount of threads*/
-				{
-					num++;
+					if(m == pkg_id_tocount) /*FIXME: only counts threads from first package_id that is found and assumes that every package has the same amount of threads*/
+					{
+						num++;
+					}
 				}
 			}
 			free(namelist[ndir]);
@@ -1248,6 +1316,7 @@ long long generic_pagesize(int id)
  int get_cpu_model(){return generic_get_cpu_model();}
  int get_cpu_stepping(){return generic_get_cpu_stepping();}
  int get_cpu_isa_extensions(char* features) {return generic_get_cpu_isa_extensions(features);}
+ int get_cpu_lwp(char* lwpfeatures) {return generic_get_cpu_lwp(lwpfeatures);}
  unsigned long long get_cpu_clockrate(int check, int cpu){return generic_get_cpu_clockrate(check,cpu);}
  unsigned long long timestamp(){return generic_timestamp();}
  int num_caches(int cpu) {return generic_num_caches(cpu);} 

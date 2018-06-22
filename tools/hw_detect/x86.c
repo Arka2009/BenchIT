@@ -58,7 +58,7 @@ static void cpuid(unsigned long long *a, unsigned long long *b, unsigned long lo
              "cpuid;"
            : "=a" (reg_a), "=b" (reg_b), "=c" (reg_c), "=d" (reg_d)
            : "a" (*a), "b" (*b), "c" (*c), "d" (*d)
-);
+     );
      *a=reg_a;
      *b=reg_b;
      *c=reg_c;
@@ -115,7 +115,7 @@ int get_rdtsc_latency()
                 //stop timestamp
                 "rdtsc;"
                 : "=a" (reg_a), "=b" (reg_b), "=c" (reg_c), "=d" (reg_d)
-     );
+          );
     a=(reg_d<<32)+(reg_a&0xffffffffULL);
     b=(reg_c<<32)+(reg_b&0xffffffffULL);
     tmp=rint(((double)(a-b))/((double)257));
@@ -197,7 +197,7 @@ static void cpuid(unsigned long long *a, unsigned long long *b, unsigned long lo
              "cpuid;"
            : "=a" (reg_a), "=b" (reg_b), "=c" (reg_c), "=d" (reg_d)
            : "a" ((int)*a), "b" ((int)*b), "c" ((int)*c), "d" ((int)*d)
-);
+     );
      *a=(unsigned long long)reg_a;
      *b=(unsigned long long)reg_b;
      *c=(unsigned long long)reg_c;
@@ -212,7 +212,7 @@ static int has_cpuid()
            "pushfl;"
            "popl %%eax;"
            : "=a" (flags_old)
-);
+   );
 
    flags_new=flags_old;
    if (flags_old&(1<<21)) flags_new&=0xffdfffff; else flags_new|=(1<<21);
@@ -224,7 +224,7 @@ static int has_cpuid()
            "popl %%eax;"
            : "=a" (flags_new)
            : "a" (flags_new)
-);
+   );
 
    // CPUID is supported if Bit 21 in the EFLAGS register can be changed
    if (flags_new==flags_old) return 0; 
@@ -235,7 +235,7 @@ static int has_cpuid()
          "popfl;"
          :
          : "a" (flags_old)
-);
+     );
      return 1;
    }
 }
@@ -245,7 +245,7 @@ unsigned long long timestamp()
   if (!has_rdtsc()) return 0;
   __asm__ __volatile__("rdtsc;": "=a" (reg_a) , "=d" (reg_d));
   // upper 32 Bit in EDX, lower 32 Bit in EAX
-  return (((unsigned long long)reg_d)<<32)+reg_a;
+  return (((unsigned long long)reg_d)<<32)+(reg_a&0xffffffffULL);
 }
 
 int get_rdtsc_latency()
@@ -285,7 +285,7 @@ int get_rdtsc_latency()
                 //stop timestamp
                 "rdtsc;"
                 : "=a" (reg_a), "=b" (reg_b), "=c" (reg_c), "=d" (reg_d)
-     );
+          );
 
     a=(((unsigned long long)reg_d)<<32)+reg_a;
     b=(((unsigned long long)reg_c)<<32)+reg_b;
@@ -762,6 +762,12 @@ int get_cpu_name(char* name, size_t len)
        if (d&(1<<25)) strncat(features,"SSE ",(len-strlen(features))-1);
        if (d&(1<<26)) strncat(features,"SSE2 ",(len-strlen(features))-1);
        if (c&1) strncat(features,"SSE3 ",(len-strlen(features))-1);
+       if (c&(1<<9)) strncat(features,"SSSE3 ",(len-strlen(features))-1);
+       if (c&(1<<19)) strncat(features,"SSE4.1 ",(len-strlen(features))-1);
+       if (c&(1<<20)) strncat(features,"SSE4.2 ",(len-strlen(features))-1);
+       if (c&(1<<28)) strncat(features,"AVX ",(len-strlen(features))-1);
+       if (c&(1<<12)) strncat(features,"FMA ",(len-strlen(features))-1);
+       if (c&(1<<25)) strncat(features,"AES ",(len-strlen(features))-1);
        if (d&(1<<8)) strncat(features,"CX8 ",(len-strlen(features))-1);
        if (c&(1<<13)) strncat(features,"CX16 ",(len-strlen(features))-1);
        if (c&(1<<23)) strncat(features,"POPCNT ",(len-strlen(features))-1);
@@ -781,6 +787,16 @@ int get_cpu_name(char* name, size_t len)
       if (d&(1<<12)) strncat(features,"MTRR ",(len-strlen(features))-1);
 
      }
+
+     if (max>=7)
+     {
+        a=7;c=0;
+        cpuid(&a,&b,&c,&d);
+             
+        if (b&(1<<5))  strncat(features,"AVX2 ", (len-strlen(features))-1);
+        if (b&(1<<16)) strncat(features,"AVX512 ", (len-strlen(features))-1);
+     }
+
      if (max_ext>=0x80000001)
      {
        a=0x80000001;
@@ -791,13 +807,18 @@ int get_cpu_name(char* name, size_t len)
          if (d&(1<<29)) strncat(features,"X86_64 ",(len-strlen(features))-1);
        #endif
      }
-   }
 
+     if (max>=6)
+     {
+       a=6;
+       cpuid(&a,&b,&c,&d);
+       if (c&(1)) strncat(features,"APERF/MPERF ",(len-strlen(features))-1);
+     }
+   }
    if (has_cpuid()) strncat(features,"CPUID ",(len-strlen(features))-1);
    //AMD specific
    if (!strcmp("AuthenticAMD",&tmp[0]))
    {
-     //TODO SSE5, AVX, FMA4
      if (max_ext>=0x80000001)
      {
        a=0x80000001;
@@ -806,6 +827,8 @@ int get_cpu_name(char* name, size_t len)
        if (d&(1<<31)) strncat(features,"3DNow ",(len-strlen(features))-1);
        if (d&(1<<30)) strncat(features,"3DNow_EXT ",(len-strlen(features))-1);
        if (d&(1<<22)) strncat(features,"MMX_EXT ",(len-strlen(features))-1);
+       if (c&(1<<16)) strncat(features,"FMA4 ",(len-strlen(features))-1);
+       if (c&(1<<15)) strncat(features,"LWP ",(len-strlen(features))-1);
        if (c&(1<<6)) strncat(features,"SSE4A ",(len-strlen(features))-1);
        if (c&(1<<5)) strncat(features,"ABM ",(len-strlen(features))-1);
        if (c&(1<<2))
@@ -834,19 +857,18 @@ int get_cpu_name(char* name, size_t len)
                   instead sysfs is used to determine scaling policy */
        }
      }
-     if (max_ext>=0x8000000a)
+     /*if (max_ext>=0x8000000a)
      {
        a=0x8000000a;
        cpuid(&a,&b,&c,&d);
 
-       /* Hardware assisted paging (Nested Paging in AMD Terms) */
+       // Hardware assisted paging (Nested Paging in AMD Terms)
        if (d&1) strncat(features,"HAP ",(len-strlen(features))-1);
-     }
+     }*/
    }
    //Intel specific
    if (!strcmp("GenuineIntel",&tmp[0]))
    {
-     //TODO AVX, extended page tables -> HAP, Larrabee new instructions? (Knights Ferry)
      if (max>=1)
      {
        a=1;
@@ -857,9 +879,6 @@ int get_cpu_name(char* name, size_t len)
              NOTE this is not included into the feature list, as it can't be determined with cpuid if it is actually used
                   instead sysfs is used to determine scaling policy */
        }
-       if (c&(1<<9)) strncat(features,"SSSE3 ",(len-strlen(features))-1);
-       if (c&(1<<19)) strncat(features,"SSE4.1 ",(len-strlen(features))-1);
-       if (c&(1<<20)) strncat(features,"SSE4.2 ",(len-strlen(features))-1);
        if (c&(1<<5)) strncat(features,"VMX ",(len-strlen(features))-1); /* TODO revision */
      }
    }
@@ -870,6 +889,58 @@ int get_cpu_name(char* name, size_t len)
 
    return 0;
  }
+
+ int get_cpu_lwp(char* lwpfeatures, size_t len)
+  {
+    char tmp[16];
+
+    if (!has_cpuid()) return generic_get_cpu_lwp(lwpfeatures,len);
+
+    memset(lwpfeatures,0,len);
+
+    a=0;
+    cpuid(&a,&b,&c,&d);
+
+    a=0x80000000;
+    cpuid(&a,&b,&c,&d);
+
+    get_cpu_vendor(tmp,sizeof(tmp));
+    //AMD LWP
+    if (!strcmp("AuthenticAMD",&tmp[0]))
+    {
+		a=0x80000001;
+		cpuid(&a,&b,&c,&d);
+		if (c&(1<<15)) {
+			a=0x8000001C;
+			cpuid(&a,&b,&c,&d);
+			if (a&(1<<0)){ //EAX: Supported by OS and HW
+				strncat(lwpfeatures,"\n   - by OS and HW: ",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<1)) strncat(lwpfeatures,"\n     - LwpVAL: LWPVAL instruction (EventId = 1) is available.",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<2)) strncat(lwpfeatures,"\n     - LwpIRE: Instructions retired event (EventId = 2) is available.",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<3)) strncat(lwpfeatures,"\n     - LwpBRE: Branch retired event (EventId = 3) is available.",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<4)) strncat(lwpfeatures,"\n     - LwpDME: DCache miss event (EventId = 4) is available.",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<5)) strncat(lwpfeatures,"\n     - LwpCNH: CPU clocks not halted event (EventId = 5) is available.",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<6)) strncat(lwpfeatures,"\n     - LwpRNH: CPU reference clocks not halted event (EventId = 6) is available.",(len-strlen(lwpfeatures))-1);
+				if (a&(1<<31)) strncat(lwpfeatures,"\n     - LwpInt: Interrupt on threshold overflow is available.",(len-strlen(lwpfeatures))-1);
+			}
+			if (d&(1<<0)){ //EDX: Supported by HW
+				strncat(lwpfeatures,"\n   - only by HW: ",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<1)) strncat(lwpfeatures,"\n     - LwpVAL: LWPVAL instruction (EventId = 1) is available.",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<2)) strncat(lwpfeatures,"\n     - LwpIRE: Instructions retired event (EventId = 2) is available.",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<3)) strncat(lwpfeatures,"\n     - LwpBRE: Branch retired event (EventId = 3) is available.",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<4)) strncat(lwpfeatures,"\n     - LwpDME: DCache miss event (EventId = 4) is available.",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<5)) strncat(lwpfeatures,"\n     - LwpCNH: CPU clocks not halted event (EventId = 5) is available.",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<6)) strncat(lwpfeatures,"\n     - LwpRNH: CPU reference clocks not halted event (EventId = 6) is available.",(len-strlen(lwpfeatures))-1);
+				if (d&(1<<31)) strncat(lwpfeatures,"\n     - LwpInt: Interrupt on threshold overflow is available.",(len-strlen(lwpfeatures))-1);
+			}
+		}
+		else strncat(lwpfeatures,"n/a",(len-strlen(lwpfeatures))-1);
+    }
+    else strncat(lwpfeatures,"n/a",(len-strlen(lwpfeatures))-1);
+
+    return 0;
+  }
+
 
 /**
  * measures clockrate using the Time-Stamp-Counter
@@ -979,9 +1050,9 @@ int num_caches(int cpu)
   //Intel specific
   if (!strcmp("GenuineIntel",&tmp[0]))
   {
+    num=0;
     if (max>=0x00000004)
     {
-      num=0;
       do
       {
          a=0x00000004;c=(unsigned long long)num;
@@ -996,7 +1067,6 @@ int num_caches(int cpu)
       //TODO use function 02h if 04h is not supported
       return generic_num_caches(cpu);
     }
-    if ((get_cpu_family()==15)&&(max>=0x00000002)) num++;
 
     return num-1;
   }
@@ -1050,14 +1120,30 @@ int cache_info(int cpu,int id, char* output, size_t len)
       size=(d>>24);
       assoc=(d>>16)&0xff;
       linesize=d&0xff;
+      shared=1;
+      
+      /* Bulldozer reports L1I to be per core not per module */ 
+      if (get_cpu_family()==21) {
+        shared=2;
+      }  
 
       if (assoc==0) return -1;
-      else if (assoc==0x1)
-        snprintf(output,len,"Level 1 Instruction Cache, %i KiB, direct mapped, %i Byte cachelines, per cpu",size,linesize);
-      else if (assoc==0xff)
-        snprintf(output,len,"Level 1 Instruction Cache, %i KiB, fully associative, %i Byte cachelines, per cpu",size,linesize);
-      else 
-        snprintf(output,len,"Level 1 Instruction Cache, %i KiB, %i-way set associative, %i Byte cachelines, per cpu",size,assoc,linesize);
+      if (shared==1) {
+        if (assoc==0x1)
+          snprintf(output,len,"Level 1 Instruction Cache: %i KiB, direct mapped, %i Byte cachelines, per cpu",size,linesize);
+        else if (assoc==0xff)
+          snprintf(output,len,"Level 1 Instruction Cache: %i KiB, fully associative, %i Byte cachelines, per cpu",size,linesize);
+        else 
+          snprintf(output,len,"Level 1 Instruction Cache: %i KiB, %i-way set associative, %i Byte cachelines, per cpu",size,assoc,linesize);
+      }
+      else {
+        if (assoc==0x1)
+          snprintf(output,len,"Level 1 Instruction Cache: %i KiB, direct mapped, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
+        else if (assoc==0xff)
+          snprintf(output,len,"Level 1 Instruction Cache: %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
+        else 
+          snprintf(output,len,"Level 1 Instruction Cache: %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",size,assoc,linesize,shared);      
+      }
 
       return 0;
     }
@@ -1072,11 +1158,11 @@ int cache_info(int cpu,int id, char* output, size_t len)
 
       if (assoc==0) return -1;
       else if (assoc==0x1)
-        snprintf(output,len,"Level 1 Data Cache, %i KiB, direct mapped, %i Byte cachelines, per cpu",size,linesize);
+        snprintf(output,len,"Level 1 Data Cache: %i KiB, direct mapped, %i Byte cachelines, per cpu",size,linesize);
       else if (assoc==0xff)
-        snprintf(output,len,"Level 1 Date Cache, %i KiB, fully associative, %i Byte cachelines, per cpu",size,linesize);
+        snprintf(output,len,"Level 1 Date Cache: %i KiB, fully associative, %i Byte cachelines, per cpu",size,linesize);
       else 
-        snprintf(output,len,"Level 1 Data Cache, %i KiB, %i-way set associative, %i Byte cachelines, per cpu",size,assoc,linesize);
+        snprintf(output,len,"Level 1 Data Cache: %i KiB, %i-way set associative, %i Byte cachelines, per cpu",size,assoc,linesize);
 
       return 0;
     }
@@ -1090,8 +1176,9 @@ int cache_info(int cpu,int id, char* output, size_t len)
       cpuid(&a,&b,&c,&d);
 
       size=(c>>16);
-      assoc=(c>>12)&0xff;
+      assoc=(c>>12)&0xf;
       linesize=c&0xff;
+      shared=1;
 
        switch (assoc)
        {
@@ -1105,14 +1192,29 @@ int cache_info(int cpu,int id, char* output, size_t len)
            case 0xe: assoc=128;break;
        }
 
+      /* Bulldozer reports L2 to be per core not per module */ 
+      if ((get_cpu_family()==21)) {
+            shared=2;
+      }
+
       if (assoc==0)
        snprintf(output,len,"L2 Cache disabled");
-      else if (assoc==0x1)
-        snprintf(output,len,"Unified Level 2 Cache, %i KiB, direct mapped, %i Byte cachelines, per cpu",size,linesize);
+      else if (shared == 1) {
+      if (assoc==0x1)
+        snprintf(output,len,"Unified Level 2 Cache: %i KiB, direct mapped, %i Byte cachelines, per cpu",size,linesize);
       else if (assoc==0xf)
-        snprintf(output,len,"Unified Level 2 Cache, %i KiB, fully associative, %i Byte cachelines, per cpu",size,linesize);
+        snprintf(output,len,"Unified Level 2 Cache: %i KiB, fully associative, %i Byte cachelines, per cpu",size,linesize);
       else 
-        snprintf(output,len,"Unified Level 2 Cache, %i KiB, %i-way set associative, %i Byte cachelines, per cpu",size,assoc,linesize);
+        snprintf(output,len,"Unified Level 2 Cache: %i KiB, %i-way set associative, %i Byte cachelines, per cpu",size,assoc,linesize);
+      }
+      else {
+      if (assoc==0x1)
+        snprintf(output,len,"Unified Level 2 Cache: %i KiB, direct mapped, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
+      else if (assoc==0xf)
+        snprintf(output,len,"Unified Level 2 Cache: %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
+      else 
+        snprintf(output,len,"Unified Level 2 Cache: %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",size,assoc,linesize,shared);      
+      }
 
       return 0;
     }
@@ -1122,31 +1224,37 @@ int cache_info(int cpu,int id, char* output, size_t len)
       cpuid(&a,&b,&c,&d);
 
       size=(d>>18)*512;
-      assoc=(d>>12)&0xff;
+      assoc=(d>>12)&0xf;
       linesize=d&0xff;
-      //TODO 12-core MCM ???
       shared=num_cores_per_package();
 
-       switch (assoc)
-       {
-           case 0x0: size=0;assoc=0;break; /* disabled */
-           case 0x6: assoc=8;break;
-           case 0x8: assoc=16;break;
-           case 0xa: assoc=32;break;
-           case 0xb: assoc=48;break;
-           case 0xc: assoc=64;break;
-           case 0xd: assoc=96;break;
-           case 0xe: assoc=128;break;
-       }
+      switch (assoc)
+      {
+          case 0x0: size=0;assoc=0;break; /* disabled */
+          case 0x6: assoc=8;break;
+          case 0x8: assoc=16;break;
+          case 0xa: assoc=32;break;
+          case 0xb: assoc=48;break;
+          case 0xc: assoc=64;break;
+          case 0xd: assoc=96;break;
+          case 0xe: assoc=128;break;
+      }
+
+      /* Magny Cours and Interlagos MCMs report L3 per package, return half the size and num cores to get info per die */
+      if ( ( (get_cpu_family()==16)&&(get_cpu_model()==9) ) || ( (get_cpu_family()==21)&&(get_cpu_model()==1) ) ) {
+        shared=shared>>1;
+        if ((assoc!=0xf)&&(assoc!=0x1)) assoc=assoc>>1;
+        size=size>>1;
+      }
 
       if (assoc==0)
        snprintf(output,len,"L3 Cache disabled");
       else if (assoc==0x1)
-        snprintf(output,len,"Unified Level 3 Cache, %i KiB, direct mapped, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
+        snprintf(output,len,"Unified Level 3 Cache: %i KiB, direct mapped, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
       else if (assoc==0xf)
-        snprintf(output,len,"Unified Level 3 Cache, %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
+        snprintf(output,len,"Unified Level 3 Cache: %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",size,linesize,shared);
       else 
-        snprintf(output,len,"Unified Level 3 Cache, %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",size,assoc,linesize,shared);
+        snprintf(output,len,"Unified Level 3 Cache: %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",size,assoc,linesize,shared);
 
       return 0;
     }
@@ -1210,9 +1318,9 @@ int cache_info(int cpu,int id, char* output, size_t len)
             {
               shared=num_threads_per_core();
               if (shared>1)
-                snprintf(output,len,"Level 1 Instruction Trace Cache, %i K Microops, %i-way set associative, shared among %i cpus",size,assoc,shared);
+                snprintf(output,len,"Level 1 Instruction Trace Cache: %i K Microops, %i-way set associative, shared among %i cpus",size,assoc,shared);
               else
-               snprintf(output,len,"Level 1 Instruction Trace Cache, %i K Microops, %i-way set associative, per cpu",size,assoc);
+               snprintf(output,len,"Level 1 Instruction Trace Cache: %i K Microops, %i-way set associative, per cpu",size,assoc);
             }
         }
 
@@ -1251,39 +1359,39 @@ int cache_info(int cpu,int id, char* output, size_t len)
        {
           if (assoc)
           {
-            if (shared>1) snprintf(output,len,"Level %i Instruction Cache, %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",level,size,assoc,linesize,shared); 
-            else snprintf(output,len,"Level %i Instruction Cache, %i KiB, %i-way set associative, %i Byte cachelines, per cpu",level,size,assoc,linesize);
+            if (shared>1) snprintf(output,len,"Level %i Instruction Cache: %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",level,size,assoc,linesize,shared); 
+            else snprintf(output,len,"Level %i Instruction Cache: %i KiB, %i-way set associative, %i Byte cachelines, per cpu",level,size,assoc,linesize);
           }
           else
           {
-            if (shared>1) snprintf(output,len,"Level %i Instruction Cache, %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",level,size,linesize,shared); 
-            else snprintf(output,len,"Level %i Instruction Cache, %i KiB, fully associative, %i Byte cachelines, per cpu",level,size,linesize);
+            if (shared>1) snprintf(output,len,"Level %i Instruction Cache: %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",level,size,linesize,shared); 
+            else snprintf(output,len,"Level %i Instruction Cache: %i KiB, fully associative, %i Byte cachelines, per cpu",level,size,linesize);
           }
        }
        if (type==1)
        {
           if (assoc)
           {
-            if (shared>1) snprintf(output,len,"Level %i Data Cache, %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",level,size,assoc,linesize,shared); 
-            else snprintf(output,len,"Level %i Date Cache, %i KiB, %i-way set associative, %i Byte cachelines, per cpu",level,size,assoc,linesize);
+            if (shared>1) snprintf(output,len,"Level %i Data Cache: %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",level,size,assoc,linesize,shared); 
+            else snprintf(output,len,"Level %i Date Cache: %i KiB, %i-way set associative, %i Byte cachelines, per cpu",level,size,assoc,linesize);
           }
           else
           {
-            if (shared>1) snprintf(output,len,"Level %i Data Cache, %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",level,size,linesize,shared); 
-            else snprintf(output,len,"Level %i Data Cache, %i KiB, fully associative, %i Byte cachelines, per cpu",level,size,linesize);
+            if (shared>1) snprintf(output,len,"Level %i Data Cache: %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",level,size,linesize,shared); 
+            else snprintf(output,len,"Level %i Data Cache: %i KiB, fully associative, %i Byte cachelines, per cpu",level,size,linesize);
           }
        }
        if (type==3)
        {
           if (assoc)
           {
-            if (shared>1) snprintf(output,len,"Unified Level %i Cache, %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",level,size,assoc,linesize,shared); 
-            else snprintf(output,len,"Unified Level %i Cache, %i KiB, %i-way set associative, %i Byte cachelines, per cpu",level,size,assoc,linesize);
+            if (shared>1) snprintf(output,len,"Unified Level %i Cache: %i KiB, %i-way set associative, %i Byte cachelines, shared among %i cpus",level,size,assoc,linesize,shared); 
+            else snprintf(output,len,"Unified Level %i Cache: %i KiB, %i-way set associative, %i Byte cachelines, per cpu",level,size,assoc,linesize);
           }
           else
           {
-            if (shared>1) snprintf(output,len,"Unified Level %i Cache, %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",level,size,linesize,shared); 
-            else snprintf(output,len,"Unified Level %i Cache, %i KiB, fully associative, %i Byte cachelines, per cpu",level,size,linesize);
+            if (shared>1) snprintf(output,len,"Unified Level %i Cache: %i KiB, fully associative, %i Byte cachelines, shared among %i cpus",level,size,linesize,shared); 
+            else snprintf(output,len,"Unified Level %i Cache: %i KiB, fully associative, %i Byte cachelines, per cpu",level,size,linesize);
           }
        }
     }
@@ -1318,7 +1426,7 @@ int cache_info(int cpu,int id, char* output, size_t len)
    char *beg,*end;
 
    cache_info(cpu,id,tmp,sizeof(tmp));
-   beg=strstr(tmp,",");
+   beg=strstr(tmp,":");
    if (beg==NULL) return generic_cache_size(cpu,id);
    else beg+=2;
    end=strstr(beg,",");
@@ -1345,7 +1453,7 @@ int cache_info(int cpu,int id, char* output, size_t len)
    char *beg,*end;
 
    cache_info(cpu,id,tmp,sizeof(tmp));
-   beg=strstr(tmp,",")+1;
+   beg=strstr(tmp,":")+1;
    if (beg==NULL) return generic_cache_assoc(cpu,id);
    else beg++;
    end=strstr(beg,",")+1;
@@ -1406,7 +1514,7 @@ int cache_info(int cpu,int id, char* output, size_t len)
    char *beg,*end;
 
    cache_info(cpu,id,tmp,sizeof(tmp));
-   beg=strstr(tmp,",")+1;
+   beg=strstr(tmp,":")+1;
    if (beg==NULL) return generic_cacheline_length(cpu,id);
    else beg++;
    end=strstr(beg,",")+1;
@@ -1487,31 +1595,22 @@ int num_tlbs(int cpu)
         a=0x00000002;
         cpuid(&a,&b,&c,&d);
 
-        if (!(a&0x80000000))
-        {
-          descriptors[0]=(a>>8)&0xff;
-          descriptors[1]=(a>>16)&0xff;
-          descriptors[2]=(a>>24)&0xff;
-        }
-        else
-        {
-          descriptors[0]=0;
-          descriptors[1]=0;
-          descriptors[2]=0;
-        }
+        for (j=0;j<4;j++) descriptors[j]=0;   
 
-        for (j=1;j<4;j++) descriptors[j-1]=(a>>(8*j))&0xff;
+        /* read three descriptors from EAX */
+        if (!(a&0x80000000)) for (j=1;j<4;j++) descriptors[j-1]=(a>>(8*j))&0xff;
+
+        /* read four descriptors from EBX,ECX,EDX */
         for (j=0;j<4;j++)
         {
-          if (!(b&0x80000000)) descriptors[j+3]=(b>>(8*j))&0xff;
-          else  descriptors[j+3]=0;
-          if (!(c&0x80000000)) descriptors[j+7]=(c>>(8*j))&0xff;
-          else  descriptors[j+7]=0;
+          if (!(b&0x80000000)) descriptors[j+3]=(b>>(8*j))&0xff; 
+          if (!(c&0x80000000)) descriptors[j+7]=(c>>(8*j))&0xff; 
           if (!(d&0x80000000)) descriptors[j+11]=(d>>(8*j))&0xff;
-          else  descriptors[j+11]=0;
         }
+
         for (j=0;j<15;j++)
         {
+
           switch(descriptors[j])
           {
             case 0x00: break;
@@ -1521,22 +1620,35 @@ int num_tlbs(int cpu)
             case 0x04: num++;break;
             case 0x05: num++;break;
             case 0x0b: num++;break;
+            case 0x4f: num++;break; 
             case 0x50: num++;break;
             case 0x51: num++;break;
             case 0x52: num++;break;
             case 0x55: num++;break;
             case 0x56: num++;break;
             case 0x57: num++;break;
+            case 0x59: num++;break;
             case 0x5a: num++;break;
             case 0x5b: num++;break;
             case 0x5c: num++;break;
             case 0x5d: num++;break;
+            case 0x61: num++;break;
+            case 0x63: num++;break;
+            case 0x76: num++;break;
+            case 0xa0: num++;break;
             case 0xb0: num++;break;
             case 0xb1: num++;break;
             case 0xb2: num++;break;
             case 0xb3: num++;break;
             case 0xb4: num++;break;
-            case 0xca: num++;break;
+            case 0xb5: num++;break;
+            case 0xb6: num++;break;
+            case 0xbA: num++;break;
+            case 0xc0: num++;break;
+            case 0xc1: num++;break;
+            case 0xc2: num++;break;
+            case 0xc3: num++;break;
+            case 0xca: num+=2;break;
             default: break;
           }
 
@@ -1562,7 +1674,7 @@ int tlb_info(int cpu, int id, char* output,size_t len)
   int assoc; /* 0 fully associative, 1 direct mapped, >1 n-way set associative */
   int pagesize;
   int comma;
-  int reduced_4M;
+  int reduced_4M=0;
   int disabled=0;
 
   if (get_cpu_vendor(tmp,16)==-1) return generic_tlb_info(cpu,id,output,len);
@@ -1580,53 +1692,53 @@ int tlb_info(int cpu, int id, char* output,size_t len)
      {
        a=0x80000005;
        cpuid(&a,&b,&c,&d);
-       if (b&0xff) {id--;if (id==-1){type=1;level=1;entries=(b&0xff);pagesize=0x1;assoc=((b>>8)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
-       if (a&0xff) {id--;if (id==-1){type=1;level=1;entries=(a&0xff);pagesize=0x6;assoc=((a>>8)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
+       if (b&0xff) {id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=(b&0xff);pagesize=0x1;assoc=((b>>8)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
+       if (a&0xff) {id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=(a&0xff);pagesize=0x6;assoc=((a>>8)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
      }
      if (max_ext>=0x80000019)
      {
        a=0x80000019;
        cpuid(&a,&b,&c,&d);
-       if (a&0xfff) {id--;if (id==-1){type=1;level=1;entries=(a&0xfff);pagesize=0x8;assoc=((a>>12)&0xf);reduced_4M=1;translate=1;}}
+       if (a&0xfff) {id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=(a&0xfff);pagesize=0x8;assoc=((a>>12)&0xf);reduced_4M=1;translate=1;}}
      }
      if (max_ext>=0x80000005)
      {
        a=0x80000005;
        cpuid(&a,&b,&c,&d);
-       if ((b>>16)&0xff) {id--;if (id==-1){type=2;level=1;entries=((b>>16)&0xff);pagesize=0x1;assoc=((b>>24)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
-       if ((a>>16)&0xff) {id--;if (id==-1){type=2;level=1;entries=((a>>16)&0xff);pagesize=0x6;assoc=((a>>24)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
+       if ((b>>16)&0xff) {id--;if (id==-1){type=DATA_TLB;level=1;entries=((b>>16)&0xff);pagesize=0x1;assoc=((b>>24)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
+       if ((a>>16)&0xff) {id--;if (id==-1){type=DATA_TLB;level=1;entries=((a>>16)&0xff);pagesize=0x6;assoc=((a>>24)&0xff);reduced_4M=1;if (assoc==0xff) assoc=0;}}
      }
      if (max_ext>=0x80000019)
      {
        a=0x80000019;
        cpuid(&a,&b,&c,&d);
-       if ((a>>16)&0xfff){id--;if (id==-1){type=2;level=1;entries=((a>>16)&0xfff);pagesize=0x8;assoc=((a>>28)&0xf);reduced_4M=1;translate=1;}}
+       if ((a>>16)&0xfff){id--;if (id==-1){type=DATA_TLB;level=1;entries=((a>>16)&0xfff);pagesize=0x8;assoc=((a>>28)&0xf);reduced_4M=1;translate=1;}}
      }
      if (max_ext>=0x80000006)
      {
        a=0x80000006;
        cpuid(&a,&b,&c,&d);
-       if (b&0xfff) {id--;if (id==-1){type=1;level=2;entries=(b&0xfff);pagesize=0x1;assoc=((b>>12)&0xf);reduced_4M=1;translate=1;}}
-       if (a&0xfff) {id--;if (id==-1){type=1;level=2;entries=(a&0xfff);pagesize=0x6;assoc=((a>>12)&0xf);reduced_4M=1;translate=1;}}
+       if (b&0xfff) {id--;if (id==-1){type=INSTRUCTION_TLB;level=2;entries=(b&0xfff);pagesize=0x1;assoc=((b>>12)&0xf);reduced_4M=1;translate=1;}}
+       if (a&0xfff) {id--;if (id==-1){type=INSTRUCTION_TLB;level=2;entries=(a&0xfff);pagesize=0x6;assoc=((a>>12)&0xf);reduced_4M=1;translate=1;}}
      }
      if (max_ext>=0x80000019)
      {
        a=0x80000019;
        cpuid(&a,&b,&c,&d);
-       if (b&0xfff) {id--;if (id==-1){type=1;level=2;entries=(b&0xfff);pagesize=0x8;assoc=((b>>12)&0xf);reduced_4M=1;translate=1;}}
+       if (b&0xfff) {id--;if (id==-1){type=INSTRUCTION_TLB;level=2;entries=(b&0xfff);pagesize=0x8;assoc=((b>>12)&0xf);reduced_4M=1;translate=1;}}
      }
      if (max_ext>=0x80000006)
      {
        a=0x80000006;
        cpuid(&a,&b,&c,&d);
-       if ((b>>16)&0xfff) {id--;if (id==-1){type=2;level=2;entries=((b>>16)&0xfff);pagesize=0x1;assoc=((b>>28)&0xf);reduced_4M=1;translate=1;}}
-       if ((a>>16)&0xfff) {id--;if (id==-1){type=2;level=2;entries=((a>>16)&0xfff);pagesize=0x6;assoc=((a>>28)&0xf);reduced_4M=1;translate=1;}}
+       if ((b>>16)&0xfff) {id--;if (id==-1){type=DATA_TLB;level=2;entries=((b>>16)&0xfff);pagesize=0x1;assoc=((b>>28)&0xf);reduced_4M=1;translate=1;}}
+       if ((a>>16)&0xfff) {id--;if (id==-1){type=DATA_TLB;level=2;entries=((a>>16)&0xfff);pagesize=0x6;assoc=((a>>28)&0xf);reduced_4M=1;translate=1;}}
      }
      if (max_ext>=0x80000019)
      {
        a=0x80000019;
        cpuid(&a,&b,&c,&d);
-       if ((b>>16)&0xfff) {id--;if (id==-1){type=2;level=2;entries=((b>>16)&0xfff);pagesize=0x8;assoc=((b>>28)&0xf);reduced_4M=1;translate=1;}}
+       if ((b>>16)&0xfff) {id--;if (id==-1){type=DATA_TLB;level=2;entries=((b>>16)&0xfff);pagesize=0x8;assoc=((b>>28)&0xf);reduced_4M=1;translate=1;}}
      }
      if (translate) switch(assoc)
      {
@@ -1654,6 +1766,13 @@ int tlb_info(int cpu, int id, char* output,size_t len)
       a=0x00000002;
       cpuid(&a,&b,&c,&d);
 
+/*
+      printf("EAX: 0x%08llx\n",a);fflush(stdout);
+      printf("EBX: 0x%08llx\n",b);fflush(stdout);
+      printf("ECX: 0x%08llx\n",c);fflush(stdout);
+      printf("EDX: 0x%08llx\n",d);fflush(stdout);
+*/
+
       iter=(a&0xff);
 
       for (i=0;i<iter;i++)
@@ -1661,61 +1780,76 @@ int tlb_info(int cpu, int id, char* output,size_t len)
         a=0x00000002;
         cpuid(&a,&b,&c,&d);
 
-        if (!(a&0x80000000))
-        {
-          descriptors[0]=(a>>8)&0xff;
-          descriptors[1]=(a>>16)&0xff;
-          descriptors[2]=(a>>24)&0xff;
-        }
-        else
-        {
-          descriptors[0]=0;
-          descriptors[1]=0;
-          descriptors[2]=0;
-        }
+        for (j=0;j<4;j++) descriptors[j]=0;   
 
-        for (j=1;j<4;j++) descriptors[j-1]=(a>>(8*j))&0xff;
+        /* read three descriptors from EAX */
+        if (!(a&0x80000000)) for (j=1;j<4;j++) descriptors[j-1]=(a>>(8*j))&0xff;
+
+        /* read four descriptors from EBX,ECX,EDX */
         for (j=0;j<4;j++)
         {
-          if (!(b&0x80000000)) descriptors[j+3]=(b>>(8*j))&0xff;
-          else  descriptors[j+3]=0;
-          if (!(c&0x80000000)) descriptors[j+7]=(c>>(8*j))&0xff;
-          else  descriptors[j+7]=0;
+          if (!(b&0x80000000)) descriptors[j+3]=(b>>(8*j))&0xff; 
+          if (!(c&0x80000000)) descriptors[j+7]=(c>>(8*j))&0xff; 
           if (!(d&0x80000000)) descriptors[j+11]=(d>>(8*j))&0xff;
-          else  descriptors[j+11]=0;
         }
+
         for (j=0;j<15;j++)
         {
-          /*TODO sort output*/
+          /*TODO sort*/
+
           switch(descriptors[j])
           {
+
             case 0x00: break;
             /* TODO check if 4M TLBs support 2M pages (at twice the capacity?) */
-            case 0x57: id--;if (id==-1){type=2;level=0;entries=16;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0x56: id--;if (id==-1){type=2;level=0;entries=16;pagesize=0x4;assoc=4;reduced_4M=0;}break;
 
-            case 0x01: id--;if (id==-1){type=1;level=1;entries=32;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0xb2: id--;if (id==-1){type=1;level=1;entries=64;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0xb0: id--;if (id==-1){type=1;level=1;entries=128;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0x50: id--;if (id==-1){type=1;level=1;entries=64;pagesize=0x7;assoc=0;reduced_4M=0;}break;
-            case 0x51: id--;if (id==-1){type=1;level=1;entries=128;pagesize=0x7;assoc=0;reduced_4M=0;}break;
-            case 0x52: id--;if (id==-1){type=1;level=1;entries=256;pagesize=0x7;assoc=0;reduced_4M=0;}break;
-            case 0x02: id--;if (id==-1){type=1;level=1;entries=2;pagesize=0x4;assoc=0;reduced_4M=0;}break;
-            case 0x55: id--;if (id==-1){type=1;level=1;entries=7;pagesize=0x6;assoc=0;reduced_4M=0;}break;
-            case 0xb1: id--;if (id==-1){type=1;level=1;entries=8;pagesize=0x6;assoc=4;reduced_4M=1;}break;
+            /* TLB0 -> 1st level data TLB */
+            case 0x57: id--;if (id==-1){type=DATA_TLB;level=1;entries=16;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0x59: id--;if (id==-1){type=DATA_TLB;level=1;entries=16;pagesize=0x1;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x56: id--;if (id==-1){type=DATA_TLB;level=1;entries=16;pagesize=0x4;assoc=4;reduced_4M=0;}break;
+            case 0x5a: id--;if (id==-1){type=DATA_TLB;level=1;entries=32;pagesize=0x6;assoc=4;reduced_4M=0;}break;
+            /* TLB1 -> 2nd level data TLB */
+            case 0xb4: id--;if (id==-1){type=DATA_TLB;level=2;entries=256;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0xba: id--;if (id==-1){type=DATA_TLB;level=2;entries=64;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0x05: id--;if (id==-1){type=DATA_TLB;level=2;entries=32;pagesize=0x4;assoc=4;reduced_4M=0;}break;
 
-            case 0x03: id--;if (id==-1){type=2;level=1;entries=64;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0xb3: id--;if (id==-1){type=2;level=1;entries=128;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0xb4: id--;if (id==-1){type=2;level=1;entries=256;pagesize=0x1;assoc=4;reduced_4M=0;}break;
-            case 0x5b: id--;if (id==-1){type=2;level=1;entries=64;pagesize=0x5;assoc=0;reduced_4M=0;}break;
-            case 0x5c: id--;if (id==-1){type=2;level=1;entries=128;pagesize=0x5;assoc=0;reduced_4M=0;}break;
-            case 0x5d: id--;if (id==-1){type=2;level=1;entries=256;pagesize=0x5;assoc=0;reduced_4M=0;}break;
-            case 0x5a: id--;if (id==-1){type=2;level=1;entries=32;pagesize=0x6;assoc=4;reduced_4M=0;}break;
-            case 0x04: id--;if (id==-1){type=2;level=1;entries=8;pagesize=0x4;assoc=4;reduced_4M=0;}break;
-            case 0x05: id--;if (id==-1){type=2;level=1;entries=32;pagesize=0x4;assoc=4;reduced_4M=0;}break;
-            case 0x0b: id--;if (id==-1){type=2;level=1;entries=4;pagesize=0x4;assoc=0;reduced_4M=0;}break;
+            /* Instruction TLB -> 1st level inst. TLB */
+            case 0x01: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=32;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0xb2: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=64;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0xb0: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=128;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0x4f: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=32;pagesize=0x1;assoc=4;reduced_4M=0;}break; /* TODO undefined associativity */
+            case 0x61: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=48;pagesize=0x1;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0xb5: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=64;pagesize=0x1;assoc=8;reduced_4M=0;}break;
+            case 0xb6: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=128;pagesize=0x1;assoc=8;reduced_4M=0;}break;
+            case 0x50: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=64;pagesize=0x7;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x51: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=128;pagesize=0x7;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x52: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=256;pagesize=0x7;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x02: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=2;pagesize=0x4;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x55: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=7;pagesize=0x6;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0xb1: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=8;pagesize=0x6;assoc=4;reduced_4M=1;}break;
+            case 0x76: id--;if (id==-1){type=INSTRUCTION_TLB;level=1;entries=8;pagesize=0x6;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
 
-            case 0xca: id--;if (id==-1){type=0;level=2;entries=512;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            /* Data TLB -> 1st level data TLB*/ 
+            case 0x03: id--;if (id==-1){type=DATA_TLB;level=1;entries=64;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0xb3: id--;if (id==-1){type=DATA_TLB;level=1;entries=128;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0xa0: id--;if (id==-1){type=DATA_TLB;level=1;entries=32;pagesize=0x1;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0xc2: id--;if (id==-1){type=DATA_TLB;level=1;entries=16;pagesize=0x3;assoc=4;reduced_4M=0;}break;
+            case 0x5b: id--;if (id==-1){type=DATA_TLB;level=1;entries=64;pagesize=0x5;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x5c: id--;if (id==-1){type=DATA_TLB;level=1;entries=128;pagesize=0x5;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x5d: id--;if (id==-1){type=DATA_TLB;level=1;entries=256;pagesize=0x5;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0xc0: id--;if (id==-1){type=DATA_TLB;level=1;entries=8;pagesize=0x5;assoc=4;reduced_4M=0;}break;
+            case 0x04: id--;if (id==-1){type=DATA_TLB;level=1;entries=8;pagesize=0x4;assoc=4;reduced_4M=0;}break;
+            case 0x0b: id--;if (id==-1){type=DATA_TLB;level=1;entries=4;pagesize=0x4;assoc=FULLY_ASSOCIATIVE;reduced_4M=0;}break;
+            case 0x63: id--;if (id==-1){type=DATA_TLB;level=1;entries=4;pagesize=0x8;assoc=4;reduced_4M=0;}break;
+
+            /* STLB -> unified second level TLB */
+            case 0xca: id--;if (id==-1){type=UNIFIED_TLB;level=2;entries=512;pagesize=0x1;assoc=4;reduced_4M=0;}break;
+            case 0xc1: id--;if (id==-1){type=UNIFIED_TLB;level=2;entries=1024;pagesize=0x3;assoc=8;reduced_4M=0;}break;
+            case 0xc3: id--;
+                       if (id==-1){type=UNIFIED_TLB;level=2;entries=1536;pagesize=0x3;assoc=6;reduced_4M=0;}
+                       if (id==0) {type=UNIFIED_TLB;level=2;entries=16;pagesize=0x8;assoc=4;reduced_4M=0;}
+                       break;
+
           }
         }
       }
@@ -1729,16 +1863,16 @@ int tlb_info(int cpu, int id, char* output,size_t len)
   if (disabled)  strncat(output,"Disabled: ",len-1);
   if (level>0) switch(type)
   {
-    case 0: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Unified Level %i TLB",level);break;
-    case 1: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i Instruction TLB",level);break;
-    case 2: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i Data TLB",level);break;
+    case UNIFIED_TLB: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Unified Level %i TLB",level);break;
+    case INSTRUCTION_TLB: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i Instruction TLB",level);break;
+    case DATA_TLB: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i Data TLB",level);break;
   }
-  if (level==0) switch(type)
+/*  if (level==0) switch(type)
   {
-    case 0: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Unified Level %i (loads only) TLB",level);break;
-    case 1: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i (loads only) Instruction TLB",level);break;
-    case 2: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i (loads only) Data TLB",level);break;
-  }
+    case UNIFIED_TLB: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Unified Level %i (loads only) TLB",level);break;
+    case INSTRUCTION_TLB: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i (loads only) Instruction TLB",level);break;
+    case DATA_TLB: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,"Level %i (loads only) Data TLB",level);break;
+  } */
 
   strncat(output,tmp_string,(len-strlen(output))-1);
   snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT," for ");
@@ -1757,15 +1891,18 @@ int tlb_info(int cpu, int id, char* output,size_t len)
     /* no 4M pages in 64 Bit Mode -> show only 2M if TLB supports 2M and 4M, show 4M only if 2M is not supported by TLB
        (according to Intels CPUID specification this is the case for a lot of TLBs in Intel CPUs - might be a bug in the docu) 
        TODO check if 4M TLBs support 2M pages (at twice the capacity?) */
-    if ((pagesize&0x4)&&(!(pagesize&0x2))) {if (comma) strncat(output,", ",(len-strlen(output))-1); strncat(output,"4M",(len-strlen(output))-1); comma=1;}
+    if ((pagesize&0x4)&&(!(pagesize&0x2))) {
+     if (reduced_4M) {if (comma) strncat(output,", ",(len-strlen(output))-1); strncat(output,"4M(half capacity)",(len-strlen(output))-1); comma=1;} //should not happen if 2M pages are not supported
+     else {if (comma) strncat(output,", ",(len-strlen(output))-1); strncat(output,"4M",(len-strlen(output))-1); comma=1;}
+    }
     if (pagesize&0x8) {if (comma) strncat(output,", ",(len-strlen(output))-1);strncat(output,"1G",(len-strlen(output))-1);comma=1;}
   #endif
-  snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT," pages, %i entries",entries);
+  snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT," pages: %i entries",entries);
   strncat(output,tmp_string,(len-strlen(output))-1);
   switch (assoc)
   {
-    case 0: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,", fully associative");break;
-    case 1: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,", direct mapped");break;
+    case FULLY_ASSOCIATIVE: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,", fully associative");break;
+    case DIRECT_MAPPED: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,", direct mapped");break;
     default: snprintf(tmp_string,_HW_DETECT_MAX_OUTPUT,", %i-way set associative",assoc);break;
   }
   strncat(output,tmp_string,(len-strlen(output))-1);
@@ -1792,7 +1929,7 @@ int tlb_info(int cpu, int id, char* output,size_t len)
    char *beg,*end;
 
    tlb_info(cpu,id,tmp,sizeof(tmp));
-   beg=strstr(tmp,",");
+   beg=strstr(tmp,":");
    if (beg==NULL) return generic_tlb_entries(cpu,id);
    else beg+=2;
    end=strstr(beg,",");
@@ -1812,7 +1949,7 @@ int tlb_info(int cpu, int id, char* output,size_t len)
    char *beg,*end;
 
    tlb_info(cpu,id,tmp,sizeof(tmp));
-   beg=strstr(tmp,",")+1;
+   beg=strstr(tmp,":")+1;
    if (beg==NULL) return generic_tlb_assoc(cpu,id);
    else beg++;
    end=strstr(beg,",")+1;
@@ -1839,7 +1976,7 @@ int tlb_info(int cpu, int id, char* output,size_t len)
 
    tlb_info(cpu,id,tmp,sizeof(tmp));
    beg=tmp;
-   end=strstr(beg,",");
+   end=strstr(beg,":");
    if (end!=NULL)*end='\0';
    else return generic_tlb_type(cpu,id);
 
@@ -1928,13 +2065,14 @@ int num_cores_per_package()
   if (!strcmp(&tmp[0],"GenuineIntel"))
   {
     /* prefer generic implementation on Processors that might support Hyperthreading */
-    /* TODO check if there are any models above 26 that don't have HT*/
     if (generic_num_cores_per_package()!=-1)
     {
       /* Hyperthreading, Netburst*/
       if (get_cpu_family()==15) num=generic_num_cores_per_package();
       /* Hyperthreading, Nehalem/Atom*/
       if ((get_cpu_family()==6)&&(get_cpu_model()>=26)) num=generic_num_cores_per_package();
+      /* MIC */
+      if (get_cpu_family()==11) num=generic_num_cores_per_package();
       if (num!=-1) return num;
     }
     
@@ -2002,6 +2140,8 @@ int num_threads_per_package()
        if (get_cpu_family()==15) num=generic_num_threads_per_package();
        /* Hyperthreading, Nehalem/Atom */
        if ((get_cpu_family()==6)&&(get_cpu_model()>=26)) num=generic_num_threads_per_package();
+       /* MIC */
+       if (get_cpu_family()==11) num=generic_num_threads_per_package();
        if (num!=-1) return num;
      }
 

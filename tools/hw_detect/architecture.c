@@ -11,6 +11,9 @@
 
 #include "cpu.h"
 #include "properties.h"
+#if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+#include "arm.h"
+#endif
 
 /**
  * display usage information
@@ -31,6 +34,7 @@ static void usage()
      printf("  cpu_stepping:            Stepping of the CPU\n");
      printf("  cpu_gate_length:         manufacturing process in nm\n");
      printf("  cpu_features:            ISA extensions of the CPU\n");
+     printf("  cpu_lwp:            		lightweight profiling support of the CPU\n");
      printf("  cpu_clockrate:           Clockrate of the CPU\n");
      printf("  cpu_clockrate_no_check:  Clockrate of the CPU (allows use of unreliable sources)\n");
      printf("  num_cpus:                Number of CPUs in the System\n");
@@ -88,6 +92,14 @@ static void show_cpu_info(int i)
    strncpy(output,"n/a",sizeof(output));get_cpu_vendor(output,sizeof(output));printf("  Vendor:           %s\n",output);
    strncpy(output,"n/a",sizeof(output));get_cpu_name(output,sizeof(output));printf("  Name:             %s\n",output);
 
+   #if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+   get_cpu_family(output, sizeof(output));
+   printf("  Model:            Family: %s, ",output);
+   get_cpu_model(output, sizeof(output));
+   printf("Model: %s, ",output);
+   get_cpu_stepping(output, sizeof(output));
+   printf("Stepping: %s\n",output);
+   #else
    res=get_cpu_family();
    if (res!=-1) printf("  Model:            Family: %llu, ",res);
    else printf("  Model:            Family: n/a, ");
@@ -97,7 +109,7 @@ static void show_cpu_info(int i)
    res=get_cpu_stepping();
    if (res!=-1) printf("Stepping: %llu\n",res);
    else printf("Stepping: n/a\n");
-
+   #endif
    res=get_cpu_clockrate(1,i);
    if (res!=0) printf("  Clockrate:        %llu MHz\n",res/1000000);
    else
@@ -112,9 +124,9 @@ static void show_cpu_info(int i)
    {
      printf("  Supported Freqs:  %s",output);
      res=scaling_governor(i,output,sizeof(output));
-     if (res!=-1) printf(", Governor: %s ",output);
+     if (res!=-1) printf(", Governor: %s",output);
      res=scaling_driver(i,output,sizeof(output));
-     if (res!=-1) printf(", Driver: %s ",output);
+     if (res!=-1) printf(", Driver: %s",output);
      printf("\n");
    }
 
@@ -197,6 +209,11 @@ static void show_cpu_info(int i)
         if (tlb_info(i,j,output,sizeof(output))!=-1) printf("   - %s\n",output);
      }
    }
+   strncpy(output,"n/a",sizeof(output));
+   #if (!((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7))))
+   get_cpu_lwp(output,sizeof(output));
+   printf("  LWP support: %s\n",output);
+   #endif
 }
 
 int main(int argc, char** argv)
@@ -207,6 +224,10 @@ int main(int argc, char** argv)
   int cpu=-1,err,i, num;
   long long size;  
   char *endptr;
+
+  #if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+  read_hw_register();
+  #endif
 
   //printf("output-size: %lu\n",sizeof(output));
 
@@ -337,25 +358,40 @@ int main(int argc, char** argv)
 
   if(!strcmp(argv[1],"cpu_family"))
   {
+     #if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+     get_cpu_family(output, sizeof(output));
+     printf("%s\n",output);
+     #else
      res=get_cpu_family();
      if (res!=-1) printf("%llu\n",res);
      else printf("%s\n",output);
+     #endif
      return 0;
   }
 
   if(!strcmp(argv[1],"cpu_model"))
   {
+     #if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+     get_cpu_model(output, sizeof(output));
+     printf("%s\n",output);
+     #else
      res=get_cpu_model();
      if (res!=-1) printf("%llu\n",res);
      else printf("%s\n",output);
+     #endif
      return 0;
   }
 
   if(!strcmp(argv[1],"cpu_stepping"))
   {
+     #if ((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7)))
+     get_cpu_stepping(output, sizeof(output));
+     printf("%s\n",output);
+     #else
      res=get_cpu_stepping();
      if (res!=-1) printf("%llu\n",res);
      else printf("%s\n",output);
+     #endif
      return 0;
   }
 
@@ -373,6 +409,16 @@ int main(int argc, char** argv)
      printf("%s\n",output);
      return 0;
   }
+
+  #if (!((defined (__ARM__))||(defined (__ARM))||(defined (ARM))||(defined (__ARMv7__))||(defined (__ARMv7))||(defined (ARMv7))))
+  if(!strcmp(argv[1],"cpu_lwp"))
+  {
+	 strncpy(output,"n/a",sizeof(output));
+	 get_cpu_lwp(output,sizeof(output));
+	 printf("  LWP support: %s\n",output);
+     return 0;
+  }
+  #endif
 
   if(!strcmp(argv[1],"cpu_clockrate"))
   {

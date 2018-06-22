@@ -4,10 +4,12 @@
 # Contact: developer@benchit.org
 #
 # $Id: PARAMETERS 1 2009-09-11 12:26:19Z william $
-# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/C/0/0/0/PARAMETERS $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/C/0/0/intervallist/PARAMETERS $
 # For license details see COPYING in the package base directory
 #####################################################################
-# Kernel: c kernel skeleton
+# Kernel: simple Variant of the c-Skeleton with list PARAMETER
 #####################################################################
+ 
+ # problem sizes
+ BENCHIT_KERNEL_PROBLEMLIST="1, 2, 3, 10-20/2, 30-100/10"
 
-BENCHIT_KERNEL_PROBLEMLIST="1, 2, 3, 10-20/2, 30-100/10"

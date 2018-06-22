@@ -3,19 +3,13 @@
  * Contact: developer@benchit.org
  *
  * $Id: bienvhash.h 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/bienvhash.h $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/bienvhash.h $
  * For license details see COPYING in the package base directory
  *******************************************************************/
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #ifndef BIENVHASH_H
 #define BIENVHASH_H
 
-#include <stdio.h>
-
+#include "stringlib.h"
 /** @file bienvhash.h
 * @Brief For more information check bienvhash(template)c.
 */
@@ -25,12 +19,12 @@ extern "C" {
 /** Dumps the table to stdout. */
 extern void bi_dumpTable(void);
 /** Dumps the table to our result file. */
-extern void bi_dumpTableToFile( FILE * );
+extern void bi_dumpTableToFile( FILE ** );
 /** Fills the table with predefined content. */
 extern void bi_fillTable(void);
 /** Retrieves a value from the table. If the given key
     does not exist a null pointer is returned. */
-extern char *bi_get ( const char *, u_int * );
+extern char *bi_get ( const char *, int * );
 /** Creates the table and initializes the fileds. */
 extern void bi_initTable(void);
 /** Puts a Key-Value pair into the table. If the key
@@ -45,7 +39,3 @@ extern int bi_readParameterFile( const char * );
 
 #endif
 
-
-#ifdef __cplusplus
-}
-#endif

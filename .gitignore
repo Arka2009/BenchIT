@@ -20,3 +20,11 @@ gui/bin/reportgen
 gui/bin/system
 # Ant buildpath
 gui/build
+# Binaries and Output (Ignore the Binaries)
+bin/
+output/
+progress/
+# Other generated files
+bienvhash.c
+gui/cfg/stdColors.cfg
+jbi/BIEnvHash.java

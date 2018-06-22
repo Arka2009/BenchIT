@@ -10,24 +10,40 @@ Core(TM)2			2			IC2D
 Core(TM)2			4			IC2Q
 Core(TM) Solo			1			InCS
 Core(TM) Duo			2			InCD
-Core(TM)i7			6			ICi7
-Core(TM)i7			4			ICi7
-Core(TM)i7			2			ICi7
-Core(TM)i5			4			ICi5
-Core(TM)i5			2			ICi5
-Core(TM)i3			2			ICi3
+Core(TM) i7			10			ICi7
+Core(TM) i7			8			ICi7
+Core(TM) i7			6			ICi7
+Core(TM) i7			4			ICi7
+Core(TM) i7			2			ICi7
+Core(TM) i5			4			ICi5
+Core(TM) i5			2			ICi5
+Core(TM) i3			2			ICi3
 Xeon				1			InXn
 Xeon				2			InX2
 Xeon				4			InX4
 Xeon				6			InX6
 Xeon				8			InX8
+Xeon				10			IX10
+Xeon				12			IX12
+Xeon				14			IX14
+Xeon				15			IX15
 Xeon				16			IX16
+Xeon				18			IX18
+Xeon				20			IX20
+Xeon				22			IX22
+Xeon				24			IX24
+Xeon				25			IX25
+Xeon				28			IX28
+Xeon				32			IX32
 Opteron(tm)			1			AmOp
 Opteron(tm)			2			AmO2
 Opteron(tm)			4			AmO4
 Opteron(tm)			6			AmO6
 Opteron(tm)			8			AmO8
 Opteron(tm)			12			AO12
+Opteron(tm)			16			AO16
+Opteron(tm)			24			AO24
+Opteron(tm)			32			AO32
 Phenom(tm) II			3			APX3
 Phenom(tm) II			4			APX4
 Phenom(tm) II			6			APX6
@@ -57,7 +73,18 @@ Intel(R)			2			In_2
 Intel(R)			4			In_4
 Intel(R)			6			In_6
 Intel(R)			8			In_8
+Intel(R)			10			I_10
+Intel(R)			12			I_12
+Intel(R)			14			I_14
+Intel(R)			15			I_15
 Intel(R)			16			I_16
+Intel(R)			18			I_18
+Intel(R)			20			I_20
+Intel(R)			22			I_22
+Intel(R)			24			I_24
+Intel(R)			25			I_25
+Intel(R)			28			I_28
+Intel(R)			32			I_32
 AMD				1			Am_1
 AMD				2			Am_2
 AMD				3			Am_3
@@ -65,6 +92,9 @@ AMD				4			Am_4
 AMD				6			Am_6
 AMD				8			Am_8
 AMD				12			A_12
+AMD				16			A_16
+AMD				24			A_24
+AMD				32			A_32
 VIA				1			Vi_1
 VIA				2			Vi_2
 VIA				3			Vi_3

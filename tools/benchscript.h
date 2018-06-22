@@ -3,13 +3,9 @@
  * Contact: developer@benchit.org
  *
  * $Id: benchscript.h 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/benchscript.h $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/benchscript.h $
  * For license details see COPYING in the package base directory
  *******************************************************************/
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #ifndef BENCHSCRIPT_H
 #define BENCHSCRIPT_H
@@ -27,7 +23,3 @@ extern void* bi_script_run( void* script );
 
 #endif
 
-
-#ifdef __cplusplus
-}
-#endif

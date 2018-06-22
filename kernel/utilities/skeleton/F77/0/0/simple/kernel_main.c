@@ -3,7 +3,7 @@
  * Contact: developer@benchit.org
  *
  * $Id: kernel_main.c 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/F77/0/0/simple/kernel_main.c $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/F77/0/0/simple/kernel_main.c $
  * For license details see COPYING in the package base directory
  *******************************************************************/
 /* Kernel: simple Variant of the Fortran-Skeleton
@@ -20,51 +20,76 @@
 bi_info * myinfo;
 
 /**  The implementation of the bi_getinfo from the BenchIT interface.
- *   Here the infostruct is filled with information about the
+ *   Here the infostruct is filled with informations about the
  *   kernel.
- *   @param infostruct  a pointer to a structure filled with zeros
+ *   @param infostruct  a pointer to a structure filled with zero's
  */
-void bi_getinfo(bi_info * infostruct)
+void bi_getinfo( bi_info * pinfo )
 {
    char * p = 0;
 /*
    int ii=0;
    bi_list_t *list;
 */     
+   (void) memset ( pinfo, 0, sizeof( bi_info ) );
 
    /* get environment variables for the kernel */
-   p = bi_getenv("BENCHIT_KERNEL_PROBLEMLIST", 0);
+   p = bi_getenv( "BENCHIT_KERNEL_PROBLEMLIST", 0 );
    bi_parselist(p);
 /*
-	list = infostruct->list;
-   for (ii = 0; ii < infostruct->listsize; ii++){
-	   printf("list[%d] = %f\n", ii, list->dnumber);
+	list = pinfo->list;
+   for ( ii = 0; ii < pinfo->listsize; ii++ ){
+	   printf("list[%d] = %f\n", ii, list->dnumber );
 	   bi_get_list_element(ii);
 	   list = list->pnext;
    }
 */   
-   infostruct->codesequence = bi_strdup("start kernel; do nothing; ");
-   infostruct->kerneldescription = bi_strdup("simple skeleton for c kernels");
-   infostruct->xaxistext = bi_strdup("Problem Size");
-   infostruct->num_measurements = infostruct->listsize;
-   infostruct->num_processes = 1;
-   infostruct->num_threads_per_process = 0;
-   infostruct->kernel_execs_mpi1 = 0;
-   infostruct->kernel_execs_mpi2 = 0;
-   infostruct->kernel_execs_pvm = 0;
-   infostruct->kernel_execs_omp = 0;
-   infostruct->kernel_execs_pthreads = 0;
-   infostruct->numfunctions = 1;
+   pinfo->codesequence = bi_strdup( "start kernel; do nothing; " );
+   pinfo->kerneldescription = bi_strdup( "simple skeleton for c kernels" );
+   pinfo->xaxistext = bi_strdup( "Problem Size" );
+   pinfo->maxproblemsize = pinfo->listsize;
+   pinfo->num_processes = 1;
+   pinfo->num_threads_per_process = 0;
+   pinfo->kernel_execs_mpi1 = 0;
+   pinfo->kernel_execs_mpi2 = 0;
+   pinfo->kernel_execs_pvm = 0;
+   pinfo->kernel_execs_omp = 0;
+   pinfo->kernel_execs_pthreads = 0;
+   pinfo->numfunctions = 1;
 
    /* allocating memory for y axis texts and properties */
-   allocYAxis(infostruct);
+   pinfo->yaxistexts = malloc( pinfo->numfunctions * sizeof( char* ) );
+   if ( pinfo->yaxistexts == NULL )
+   {
+     fprintf( stderr, "Allocation of yaxistexts failed.\n" ); fflush( stderr );
+     exit( 127 );
+   }
+   pinfo->outlier_direction_upwards = malloc( pinfo->numfunctions * sizeof( int ) );
+   if ( pinfo->outlier_direction_upwards == NULL )
+   {
+     fprintf( stderr, "Allocation of outlier direction failed.\n" ); fflush( stderr );
+     exit( 127 );
+   }
+   pinfo->legendtexts = malloc( pinfo->numfunctions * sizeof( char* ) );
+   if ( pinfo->legendtexts == NULL )
+   {
+     fprintf( stderr, "Allocation of legendtexts failed.\n" ); fflush( stderr );
+     exit( 127 );
+   }
+   pinfo->base_yaxis = malloc( pinfo->numfunctions * sizeof( double ) );
+   if ( pinfo->base_yaxis == NULL )
+   {
+     fprintf( stderr, "Allocation of base yaxis failed.\n" ); fflush( stderr );
+     exit( 127 );
+   }
+
    /* setting up y axis texts and properties */
-   infostruct->yaxistexts[0] = bi_strdup("s");
-   infostruct->selected_result[0] = SELECT_RESULT_LOWEST;
-   infostruct->base_yaxis[0] = 1; //logarythmic axis 10^x
-   infostruct->legendtexts[0] = bi_strdup("time in s");
+   pinfo->yaxistexts[0] = bi_strdup( "time in s" );
+   pinfo->outlier_direction_upwards[0] = 0;
+   pinfo->base_yaxis[0] = 10; //logarythmic axis 10^x
+   pinfo->legendtexts[0] = bi_strdup( "time in s" );
  
-   myinfo = infostruct;
+   myinfo = pinfo;
  }
 
 
@@ -72,66 +97,85 @@ void bi_getinfo(bi_info * infostruct)
 /** Implementation of the bi_init of the BenchIT interface.
  *  Here you have the chance to allocate the memory you need.
  *  It is also possible to allocate the memory at the beginning
- *  of every single measurement and to free the memory thereafter.
- *  But always making use of the same memory is faster.
+ *  of every single measurment and to free the memory thereafter.
+ *  But making usage always of the same memory is faster.
  *  HAVE A LOOK INTO THE HOWTO !
  */
-void* bi_init(int problemSizemax)
+void* bi_init( int problemsizemax )
 {
+
    return myinfo;
 }
 
 
 
 /** The central function within each kernel. This function
- *  is called for each measurement step seperately.
+ *  is called for each measurment step seperately.
  *  @param  mdpv         a pointer to the structure created in bi_init,
  *                       it is the pointer the bi_init returns
- *  @param  problemSize  the actual problemSize
+ *  @param  problemsize  the actual problemsize
  *  @param  results      a pointer to a field of doubles, the
  *                       size of the field depends on the number
  *                       of functions, there are #functions+1
  *                       doubles
- *  @return 0 if the measurement was sucessfull, something
+ *  @return 0 if the measurment was sucessfull, something
  *          else in the case of an error
  */
-int bi_entry(void * mdpv, int problemSize, double * dresults)
+int bi_entry( void * mdpv, int iproblemsize, double * dresults )
 {
-  /* timeInSecs: the time for a single measurement in seconds */
-  double timeInSecs = 0.0;
+  /* dstart, dend: the start and end time of the measurement */
+  /* dtime: the time for a single measurement in seconds */
+  double dstart = 0.0, dend = 0.0, dtime = 0.0;
+  /* flops stores the calculated FLOPS */
+  double dres = 0.0;
+  /* ii is used for loop iterations */
+  myinttype ii = 0, imyproblemsize = 0;
   double dprob;
-  /* calculate real problemSize */
+  /* calculate real problemsize */
   
-//  printf("bi_get_list_element(%d)\n", iproblemSize);
-  dprob = bi_get_list_element(problemSize);
-  printf("bi_entry: list[%d] = %f\n", problemSize, dprob);
-  //printf("actual problemSize = %d\n", imyproblemSize);
+//  printf("bi_get_list_element(%d)\n", iproblemsize);
+  dprob = bi_get_list_element(iproblemsize);
+  printf("bi_entry: list[%d] = %f\n", iproblemsize, dprob);
+  //printf("actual problemsize = %d\n", imyproblemsize);
+
+  /* check wether the pointer to store the results in is valid or not */
+  if ( dresults == NULL ) return 1;
 
   /* get the actual time
    * do the measurement / your algorythm
    * get the actual time
    */
-  problemSize=dprob;
-  bi_startTimer();
-  fortranfunction_(&problemSize); 
-  timeInSecs = bi_stopTimer();
+  dstart = bi_gettime(); 
+//  dres = simple(&imyproblemsize); 
+//  fortranfunction_(&imyproblemsize); 
+  dend = bi_gettime();
 
-//  fprintf(stderr, "Problemsize=%d, Value=%f\n", imyproblemSize, dres);
+//  fprintf( stderr, "Problemsize=%d, Value=%f\n", imyproblemsize, dres);
+
+  /* calculate the used time and FLOPS */
+  dtime = dend - dstart;
+  dtime -= dTimerOverhead;
+      
+  /* If the operation was too fast to be measured by the timer function,
+   * mark the result as invalid 
+   */
+  if( dtime < dTimerGranularity ) dtime = INVALID_MEASUREMENT;
 
   /* store the results in results[1], results[2], ...
   * [1] for the first function, [2] for the second function
   * and so on ...
   * the index 0 always keeps the value for the x axis
   */
-  dresults[0] = dprob;
-  dresults[1] = timeInSecs;
+  dresults[0] = (double)imyproblemsize;
+  dresults[1] = dtime;
 
   return 0;
 }
 
 /** Clean up the memory
  */
-void bi_cleanup(void* mdpv)
+void bi_cleanup( void* mdpv )
 {
    return;
 }
+

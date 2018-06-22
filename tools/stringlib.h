@@ -3,15 +3,11 @@
  * Contact: developer@benchit.org
  *
  * $Id: stringlib.h 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/stringlib.h $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/stringlib.h $
  * For license details see COPYING in the package base directory
  *******************************************************************/
 /* For advanced string work, see c-file for more information.
  *******************************************************************/
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /** @file stringlib.h
 * @Brief For advanced string work, see c-file for more information.
@@ -40,7 +36,3 @@ extern int min( int, int );
 
 #endif
 
-
-#ifdef __cplusplus
-}
-#endif

@@ -3,7 +3,7 @@
  * Contact: developer@benchit.org
  *
  * $Id: benchscript.c 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/benchscript.c $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/benchscript.c $
  * For license details see COPYING in the package base directory
  *******************************************************************/
 /* The implementation of the BenchScript Interface
@@ -21,26 +21,26 @@
 #include <stdlib.h>
 #include <string.h>
 
-double logx(double base, double value)
+double logx( double base, double value )
 {
-  return log(value) / log(base);
+  return log( value ) / log( base );
 }
 
-char* int2char(int number)
+char* int2char( int number )
 {
   char buffer[100], *ret_val;
   size_t size;
 
-  size = sprintf(buffer, "%d", number) * sizeof(char);
+  size = sprintf( buffer, "%d", number ) * sizeof(char);
 
-  ret_val = (char*) malloc (size +1);
+  ret_val = (char*) malloc ( size +1 );
 
-  strcpy(ret_val, buffer);
+  strcpy( ret_val, buffer );
   
   return ret_val;
 }
 
-char* bi_strcat(const char *str1, const char *str2)
+char* bi_strcat( const char *str1, const char *str2 )
 {
   const char *pi1, *pi2;
   char *so, *po;
@@ -58,9 +58,9 @@ char* bi_strcat(const char *str1, const char *str2)
     pi2++;
   }
 
-  size = (((pi1 + 1 - str1) + (pi2 + 1 - str2)) * sizeof(char));
+  size = ( ( ( pi1 + 1 - str1 ) + ( pi2 + 1 - str2 ) ) * sizeof(char) );
 
-  so = (char*) malloc (size);
+  so = (char*) malloc ( size );
 
   pi1 = str1;
   pi2 = str2;
@@ -80,66 +80,66 @@ char* bi_strcat(const char *str1, const char *str2)
   return (so);
 }
 
-void bi_script(char* script, int num_processes, int num_threads)
+void bi_script( char* script, int num_processes, int num_threads )
 {
-  if(num_processes <= 1)
+  if( num_processes <= 1 )
   {
-    if(num_threads <= 1)
+    if( num_threads <= 1 )
     {
-/*      printf("************** single run **********************\n"); */
-      bi_script_run((void*) script);
-/*      printf("************** single don **********************\n"); */
+/*      printf( "************** single run **********************\n" ); */
+      bi_script_run( (void*) script );
+/*      printf( "************** single don **********************\n" ); */
     }
     else
     {
-/*      printf("************** threaded run ********************\n"); */
-      bi_script_create_threads(script, num_threads);
-/*      printf("************** threaded don ********************\n"); */
+/*      printf( "************** threaded run ********************\n" ); */
+      bi_script_create_threads( script, num_threads );
+/*      printf( "************** threaded don ********************\n" ); */
     }
   }
   else
   {
-/*      printf("************** mproc run ***********************\n"); */
-    bi_script_create_processes(script, num_processes, num_threads);
-/*      printf("************** mproc don ***********************\n"); */
+/*      printf( "************** mproc run ***********************\n" ); */
+    bi_script_create_processes( script, num_processes, num_threads );
+/*      printf( "************** mproc don ***********************\n" ); */
   }
 }
 
-void bi_script_create_processes(char* script, int num_processes, int num_threads)
+void bi_script_create_processes( char* script, int num_processes, int num_threads )
 {
   int i,j;
   int first_pid, last_pid;
   int * child_pids;
   
   /* recognize the parent process pid */
-  child_pids = (int*) malloc(num_processes* sizeof(int));
+  child_pids = (int*) malloc( num_processes* sizeof(int) );
   
   first_pid = getpid();
 
   num_processes = 1;
   
-  for(i=0; i < num_processes; i++)
+  for( i=0; i < num_processes; i++ )
   {
-    if(getpid() == first_pid)
+    if( getpid() == first_pid )
     {
       last_pid = fork();
-      if(last_pid == 0)
+      if( last_pid == 0 )
       {
         /* check if single or multi threaded */
-        if(num_threads <= 1)
+        if( num_threads <= 1 )
         {
-/*          printf("process pid: %d\n", getpid()); */
-          bi_script_run((void*) script);
+/*          printf( "process pid: %d\n", getpid() ); */
+          bi_script_run( (void*) script );
         }
         else
         {
-/*          printf("process pid: %d\n", getpid()); */
-          bi_script_create_threads(script, num_threads);
+/*          printf( "process pid: %d\n", getpid() ); */
+          bi_script_create_threads( script, num_threads );
         }
         
         exit(0); 
       }
-      else if(last_pid < 0)
+      else if( last_pid < 0 )
       {
         /* the process could not be forked */
         exit(1);
@@ -155,35 +155,35 @@ void bi_script_create_processes(char* script, int num_processes, int num_threads
   int status;
   
   /* wait until all childs have exited */
-  for(j=0; j < num_processes; j++)
+  for( j=0; j < num_processes; j++ )
   {
-    waitpid(child_pids[j], &status, 0);
+    waitpid( child_pids[j], &status, 0 );
   }
 }
 
-void bi_script_create_threads(char* script, int num_threads)
+void bi_script_create_threads( char* script, int num_threads )
 {
   int i,j;
   pthread_t thread_ids[ num_threads ];
 
-/*    printf("process pid in threadcaller: %d\n", getpid()); */
+/*    printf( "process pid in threadcaller: %d\n", getpid() ); */
   /* start the threads */
-  for(i=0; i < num_threads; i++)
+  for( i=0; i < num_threads; i++ )
   { 
-    pthread_create(&thread_ids[i], NULL, &bi_script_run, script);
-/*    printf("created thread %d\n", thread_ids[i]); */
+    pthread_create( &thread_ids[i], NULL, &bi_script_run, script );
+/*    printf( "created thread %d\n", thread_ids[i]); */
   }
 
   /* collect the threads */
-  for(j=0; j < num_threads; j++)
+  for( j=0; j < num_threads; j++ )
   {
-/*    printf("waiting for thread %d\n", thread_ids[j]); */
-    pthread_join(thread_ids[j], NULL);
+/*    printf( "waiting for thread %d\n", thread_ids[j]); */
+    pthread_join( thread_ids[j], NULL);
   }
 }
 
-void* bi_script_run(void* script)
+void* bi_script_run( void* script )
 {
-  return (void*) (intptr_t) system((char*) script);
+  return (void*) system( (char*) script );
 }
 

@@ -1,0 +1,5984 @@
+/******************************************************************************************************
+ * BenchIT - Performance Measurement for Scientific Applications
+ * Contact: developer@benchit.org
+ *
+ * $Id$
+ * For license details see COPYING in the package base directory
+ ******************************************************************************************************/
+/* Kernel: measures write bandwidth of data located in different cache levels or memory of certain CPUs.
+ ******************************************************************************************************/
+ 
+/*
+ * TODO  - check malloc and mmap return values for errors and abort if alocation of buffers fails
+ *       - adopt cache and TLB parameters to refer to identifiers returned by 
+ *         the hardware detection
+ *       - optional global or local alloc of flush buffer
+ *       - add manual instrumentation for VampirTracce
+ *       - memory layout improvements (as for single-r1w1)
+ */
+
+#include "interface.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/time.h>
+#include <time.h>
+#include <math.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <assert.h>
+#include <errno.h>
+#include <unistd.h>
+#include <limits.h>
+
+#include "work.h"
+
+#ifdef USE_PAPI
+#include <papi.h>
+#endif
+
+
+/* user defined maximum value of random numbers returned by _random() */
+static unsigned long long random_max=0;
+
+/* parameters for random number generator 
+ *  formula: random_value(n+1) = (rand_a*random_value(n)+rand_b)%rand_m
+ *  rand_fix: rand_fix=(rand_a*rand_fix+rand_b)%rand_m
+ *        - won't be used as start_value
+ *        - can't be reached by random_value, however special care is taken that rand_fix will also be returned by _random()
+ */
+static unsigned long long random_value=0;
+static unsigned long long rand_a=0;
+static unsigned long long rand_b=0;
+static unsigned long long rand_m=1;
+static unsigned long long rand_fix=0;
+
+/* table of prime numbers needed to generate parameters for random number generator */
+int *p_list=NULL;
+int p_list_max=0;
+int pos=0;
+
+/* variables for prime factorization needed to generate parameters for random number generator */
+long long parts [64];
+int part_count;
+long long number;
+int max_factor;
+
+/** checks if value is prime
+ *  has to be called with all prime numbers < sqrt(value)+1 prior to the call with value
+ */
+static int isprime(unsigned long long value)
+{
+  int i;
+  int limit = (int) trunc(sqrt((double) value)) +1;
+  for (i=0;i<=pos;i++){
+      if (p_list[i]>limit) break;
+      if (value==(unsigned long long)p_list[i]) return 1;
+      if (value%p_list[i]==0) return 0;
+  }
+  if (pos < p_list_max -1){
+     pos++;
+     p_list[pos]=value;
+  }
+  else
+   if (p_list[pos]<limit) 
+      for (i=p_list[pos];i<=limit;i+=2){
+        if (value%i==0) return 0;
+      }
+  return 1;
+}
+
+/** checks if value is a prime factor of global variable number
+ *  has to be called with all prime numbers < sqrt(value)+1 prior to the call with value
+ */
+static int isfactor(int value)
+{
+  if (value<p_list[p_list_max-1]) if (!isprime(value)) return 0;
+  if (number%value==0){
+     parts[part_count]=value;
+     while (number%value==0){
+       number=number/value;
+     }
+     part_count++;
+     max_factor = (int) trunc(sqrt((double) number))+1;
+  }
+  return 1;
+}
+
+/** calculates (x^y)%m
+ */
+static unsigned long long potenz(long long x, long long y, long long m)
+{
+   unsigned long long res=1,mask=1;
+
+   if (y==0) return 1;if (y==1) return x%m;
+
+   assert(y==(y&0x00000000ffffffffULL));
+   assert(x==(x&0x00000000ffffffffULL));
+   assert(m==(m&0x00000000ffffffffULL));
+   
+   mask = mask<<63;
+   while ((y&mask)==0) mask= mask >> 1;
+   do{
+        if (y&mask){
+            res=(res*x)%m;
+            res=(res*res)%m;
+        }
+        else res=(res*res)%m;
+        mask = mask >> 1;
+   }
+   while (mask>1);
+   if (y&mask) res=(res*x)%m;
+
+   return res;
+}
+
+/** checks if value is a primitive root of rand_m
+ */
+static int isprimitiveroot(long long value)
+{
+  long long i,x,y;
+  for (i=0;i<part_count;i++){
+      x = value;
+      y = (rand_m-1)/parts[i];     
+      if (potenz(x,y,rand_m)==1) return 0;
+  }
+  return 1;
+}
+
+/** returns a pseudo random number
+ *  do not use this function without a prior call to _random_init()
+ */
+unsigned long long _random(void)
+{
+  if (random_max==0) return -1;
+  do{
+    random_value = (random_value * rand_a + rand_b)%rand_m;
+  }
+  while (((random_value>random_max)&&(rand_fix<random_max))||((random_value>=random_max)&&(rand_fix>=random_max)));
+  /* hide fixpoint to ensure that each number < random_max is eventually returned (generate permutation of 0..random_max-1) */
+  if (random_value<rand_fix) return random_value;
+  else return random_value-1;
+}
+
+/** Initializes the random number generator with the values given to the function.
+ *  formula: r(n+1) = (a*r(n)+b)%m
+ *  sequence generated by calls of _random() is a permutation of values from 0 to max-1
+ */
+void _random_init(int start,int max)
+{
+  int i;
+  unsigned long long x,f1,f2;
+
+  random_max = (unsigned long long) max;
+  if (random_max==0) return;
+  /* allocate memory for prime number table */
+  if ((((int) trunc(sqrt((double) random_max)) +1)/2+1)>p_list_max){
+    p_list_max=((int) trunc(sqrt((double) random_max)) +1)/2+1;
+    p_list=realloc(p_list,p_list_max*sizeof(int));
+    if (p_list==NULL){
+      while(p_list==NULL){
+        p_list_max=p_list_max/2;
+        p_list=calloc(p_list_max,sizeof(int));
+        assert(p_list_max>2);
+      }
+      pos=0;
+    }
+    if (pos==0){
+      p_list[0]=2;
+      p_list[1]=3;
+      pos++;
+    }
+  }
+
+  /* setup parameters rand_m, rand_a, rand_b, and rand_fix*/
+  rand_m=1;
+  do{
+    rand_m+=2;
+    rand_a=0;
+
+    /* find a prime number for rand_m, larger than random_max*/
+    while ((pos<p_list_max-1)){rand_m+=2;isprime(rand_m);} /* fill prime number table */
+    if (rand_m<=random_max) {rand_m=random_max+1;if(rand_m%2==0)rand_m++;}
+    while (!isprime(rand_m)) rand_m+=2;
+  
+    /* set rand_b to a value between rand_m/4 and 3*rand_m/4 */
+    rand_b=start%(rand_m/2)+rand_m/4;
+    rand_b|=1; // avoid b=0 for m=3, ensures b is odd
+  
+    /* prime factorize rand_m-1, as those are good candidates for primitive roots of rand_m */
+    number=rand_m-1;
+    max_factor = (int) trunc(sqrt((double) number))+1;
+    part_count=0;
+    for(i=0;i<p_list_max;i++) isfactor(p_list[i]);
+    i=p_list[p_list_max-1];
+    while (i<max_factor){
+       isfactor(i);
+       i+=2;
+    }
+    if (number>1){
+       parts[part_count]=number;
+       part_count++;
+    }
+  
+    /* find a value for rand_a that is a primitive root of rand_m and != rand_m/2 
+     * rand_a = rand_m/2 has a high likelyhood to generate a regular pattern */
+    for (i=0;i<part_count;i++){
+      if ((rand_m/2!=parts[i])&&(parts[i]*parts[i]>rand_m)&&(isprimitiveroot(parts[i]))) {rand_a=parts[i];break;}
+    }
+    
+    /* find fixpoint 
+     * check all possibilities: fix = a * fix + b, fix = (a * fix + b) - m, fix = (a * fix +b) - 2m, ... , fix = (a * fix +b) - (a * m)
+     * b is != 0, thus fix = a * fix + b (i.e., fix = 0) cannot happen 
+     */
+    rand_fix=0;
+    if (rand_a!=0) for(x=1;x<=rand_a;x++){        // check for '- (n * m)' with 1 <= n <= a, '- (0 * m)' does not happen (see above)
+        f1 = ((x*rand_m) -rand_b ) / (rand_a-1);  // f1 = (a * f1 + b) - (x * m) -> 0 = (a-1) * f1 + b - (x * m) -> f1 = ((x * m) -b) / (a - 1)
+        f2 = ((f1*rand_a)+rand_b) % rand_m;       // check if f1 is the fixpoint (this only happens for the right x)
+        if (f1==f2) {rand_fix=f1;break;}
+    }    
+  }
+  /* condition 1 avoids small values for rand_a in order to generate highly fluctuating sequences,
+   * condition 2 avoids that a combination of rand_m, rand_a, and rand_b is choosen that does not have a fixpoint (should never happen for prime rand_m)
+   */
+  while((rand_a*rand_a<rand_m)||(rand_fix==0));
+
+
+  /* generator is initialized with the user defined start value */
+  random_value= (unsigned long long)start%rand_m;
+  if (random_value==rand_fix) random_value=0;  /* replace with 0 if it equals rand_fix */
+}
+
+/*
+ * use a block of memory to ensure it is in the caches afterwards
+ * MODE_EXCLUSIVE: - cache line will be exclusive in cache of calling CPU
+ * MODE_MODIFIED:  - cache line will be modified in cache of calling CPU
+ * MODE_INVALID:   - cache line will be invalid in all caches
+ * MODE_SHARED/MODE_OWNED/MODE_FORWARD:
+ *   - these modes perform a read-only access (on SHARE_CPU)
+ *   - together with accesses on another CPU with MODE_{EXCLUSIVE|MODIFIED} cache line will be in the
+ *     desired coherency state in the cache of the OTHER CPU, and SHARED in the cache of SHARE_CPU
+ *     (see USE MODE ADAPTION in file work.c)
+ */
+static inline int use_memory(void* buffer,void* flush_buffer,unsigned long long memsize,int mode,int direction,int repeat,cpu_info_t cpuinfo)
+{
+   int i,j,tmp=0xd08a721b;
+   unsigned long long stride = 64;
+
+   for (i=cpuinfo.Cachelevels;i>0;i--)
+   {
+     if (cpuinfo.Cacheline_size[i-1]<stride) stride=cpuinfo.Cacheline_size[i-1];
+   }
+
+   if ((mode==MODE_MODIFIED)||(mode==MODE_EXCLUSIVE)||(mode==MODE_INVALID))
+   {
+     //invalidate remote caches
+     __asm__ __volatile__(
+       		"_use_mem_inv_loop:"
+       		"mov %%rbx, (%%rax);"
+       		"add %%rcx, %%rax;"
+       		"sub $1, %%rdx;"
+       		"jnz _use_mem_inv_loop;"
+       		:: "a" ((unsigned long long)buffer), "b" (tmp), "c" (stride), "d" (memsize/stride) : "memory");
+
+     //invalidate local caches
+     if (!cpuinfo.disable_clflush) clflush(buffer,memsize,cpuinfo);
+     else {
+       __asm__ __volatile__(
+       		"_use_mem_flush_loop:"
+       		"mov %%rbx, (%%rax);"
+       		"add %%rcx, %%rax;"
+       		"sub $1, %%rdx;"
+       		"jnz _use_mem_flush_loop;"
+       		:: "a" ((unsigned long long)flush_buffer), "b" (tmp), "c" (stride), "d" (((cpuinfo.D_Cache_Size_per_Core*cpuinfo.EXTRA_FLUSH_SIZE)/50)/stride) : "memory");
+       clflush(flush_buffer,(cpuinfo.D_Cache_Size_per_Core*cpuinfo.EXTRA_FLUSH_SIZE)/50,cpuinfo);
+     }
+   } 
+   
+      __asm__ __volatile__("mfence;"::: "memory");
+  
+
+   j=repeat;
+
+   if (mode==MODE_MODIFIED)
+   {
+     while(j--)
+     {
+       if (direction==FIFO){
+         __asm__ __volatile__(
+       		"_use_mem_write_loop_fifo:"
+       		"mov %%rbx, (%%rax);"
+       		"add %%rcx, %%rax;"
+       		"sub $1, %%rdx;"
+       		"jnz _use_mem_write_loop_fifo;"
+       		:: "a" ((unsigned long long)buffer), "b" (tmp), "c" (stride), "d" (memsize/stride) : "memory");
+       }
+       if (direction==LIFO){
+         __asm__ __volatile__(
+       		"_use_mem_write_loop_lifo:"
+       		"sub %%rcx, %%rax;"
+       		"mov %%rbx, (%%rax);"       		
+       		"sub $1, %%rdx;"
+       		"jnz _use_mem_write_loop_lifo;"
+       		:: "a" ((unsigned long long)buffer+memsize), "b" (tmp), "c" (stride), "d" (memsize/stride) : "memory");
+       }
+     }
+   } 
+ 
+   if ((mode==MODE_EXCLUSIVE)||(mode==MODE_SHARED)||(mode==MODE_OWNED)||(mode==MODE_FORWARD)||(mode==MODE_RDONLY)) 
+   {
+     while(j--)
+     {
+       if (direction==FIFO){
+         __asm__ __volatile__(
+       		"_use_mem_read_loop_fifo:"
+       		"add (%%rax), %%rbx;"
+       		"add %%rcx, %%rax;"
+       		"sub $1, %%rdx;"
+       		"jnz _use_mem_read_loop_fifo;"
+       		: "=b" (tmp) : "a" ((unsigned long long)buffer), "c" (stride), "d" (memsize/stride));
+       }
+       if (direction==LIFO) {
+         __asm__ __volatile__(
+       		"_use_mem_read_loop_lifo:"
+       		"sub %%rcx, %%rax;"
+       		"add (%%rax), %%rbx;"
+       		"sub $1, %%rdx;"
+       		"jnz _use_mem_read_loop_lifo;"
+       		: "=b" (tmp) : "a" ((unsigned long long)buffer+memsize), "c" (stride), "d" (memsize/stride));
+       }
+     }
+   }  
+
+      __asm__ __volatile__("mfence;"::: "memory");
+
+
+   return tmp;
+}
+
+/**
+ * flushes data from the specified cachelevel
+ * @param level the cachelevel that should be flushed
+ * @param num_flushes number of accesses to each cacheline
+ * @param mode MODE_EXCLUSIVE: fill cache with dummy data in state exclusive
+ *             MODE_MODIFIED:  fill cache with dummy data in state modified (causes write backs of dirty data later on)
+ *             MODE_INVALID:   invalidate cache (requires clflush)
+ *             MODE_RDONLY:    fill cache with valid dummy data, does not perform any write operations, state can be exclusive or shared/forward
+ * @param buffer pointer to a memory area, size of the buffer has to be 
+ *               has to be larger than 2 x sum of all cachelevels <= level
+ */
+static inline int cacheflush(int level,int num_flushes,int mode,void* buffer,cpu_info_t cpuinfo)
+{
+  unsigned long long stride=cpuinfo.Cacheline_size[level-1]/num_flushes;
+  unsigned long long size=0;
+  int i,j,tmp=0x0fa38b09;
+
+  if (level>cpuinfo.Cachelevels) return -1;
+
+  //exclusive caches
+  if ((!strcmp(cpuinfo.vendor,"AuthenticAMD")) && (cpuinfo.family != 21))for (i=0;i<level;i++)
+  {
+     if (cpuinfo.Cache_unified[i]) size+=cpuinfo.U_Cache_Size[i];
+     else size+=cpuinfo.D_Cache_Size[i];
+  }
+  //inclusive L2, exclusive L3
+  if ((!strcmp(cpuinfo.vendor,"AuthenticAMD")) && (cpuinfo.family == 21))
+  {
+    if (level<3)
+    {
+      i=level-1;
+   	  if (cpuinfo.Cache_unified[i]) size=cpuinfo.U_Cache_Size[i];
+      else size=cpuinfo.D_Cache_Size[i];
+    }
+    else for (i=1;i<level;i++)
+    {     
+     if (cpuinfo.Cache_unified[i]) size+=cpuinfo.U_Cache_Size[i];
+     else size+=cpuinfo.D_Cache_Size[i];
+    }
+  }
+  //inclusive caches
+  if (!strcmp(cpuinfo.vendor,"GenuineIntel"))
+  {
+     i=level-1;
+     if (cpuinfo.Cache_unified[i]) size=cpuinfo.U_Cache_Size[i];
+     else size=cpuinfo.D_Cache_Size[i];
+  } 
+
+  size*=cpuinfo.EXTRA_FLUSH_SIZE;
+  // double amount of accessed memory for LLC flushes and decrease num_flushes
+  if (level==cpuinfo.Cachelevels){ 
+    size*=2;
+    num_flushes/=3;
+    num_flushes++;
+  }
+  size/=100;
+
+  if (stride<sizeof(unsigned int)) stride=sizeof(unsigned int);
+  
+  if (mode!=MODE_RDONLY){
+    j=num_flushes;
+    while(j--)
+    {
+     for (i=0;i<size;i+=stride)
+     {
+       tmp|=*((int*)((unsigned long long)buffer+i));
+       *((int*)((unsigned long long)buffer+i))=tmp;
+     }
+    }
+  }
+  if ((mode==MODE_EXCLUSIVE)||(mode==MODE_INVALID)){
+    clflush(buffer,size,cpuinfo);
+  }
+  if ((mode==MODE_EXCLUSIVE)||(mode==MODE_RDONLY)){
+    j=num_flushes;
+    while(j--)
+    {
+     for (i=0;i<size;i+=stride)
+     {
+       tmp|=*((int*)((unsigned long long)buffer+i));
+     }
+     *((int*)((unsigned long long)buffer+i))=tmp;
+    }
+  }
+
+  return tmp;
+}
+
+
+/*
+ * flush all caches that are smaller than the specified memory size, including shared caches
+ */
+static inline void flush_caches(void* buffer,unsigned long long memsize,int settings,int num_flushes,int flush_mode,void* flush_buffer,cpu_info_t *cpuinfo)
+{
+   int i,j;
+   unsigned long long total_cache_size;
+   if ((!strcmp(cpuinfo->vendor,"AuthenticAMD")) && (cpuinfo->family != 21)) //exclusive caches
+   for (i=cpuinfo->Cachelevels;i>0;i--)
+   {   
+     if (settings&FLUSH(i))
+     {
+       // determine total exclusive cache size of level that should be flushed
+       total_cache_size=0;
+       for (j=i;j>0;j--) total_cache_size+=cpuinfo->U_Cache_Size[j-1]+cpuinfo->D_Cache_Size[j-1];
+       // subtract higher levels that are flushed too as these flushes polute the cache and reduce the effectively usable size
+       for (j=i-1;j>0;j--) if (settings&FLUSH(j)) total_cache_size-=cpuinfo->U_Cache_Size[j-1]+cpuinfo->D_Cache_Size[j-1];
+       if(memsize>total_cache_size)
+       {
+         cacheflush(i,num_flushes,flush_mode,flush_buffer,*(cpuinfo));
+         break;
+       }
+     }
+   }
+   else if ((!strcmp(cpuinfo->vendor,"AuthenticAMD")) && (cpuinfo->family == 21))//inclusive L2 cache, exclusive L3
+   {
+    for (i=cpuinfo->Cachelevels;i>2;i--)
+    {   
+     if (settings&FLUSH(i))
+     {
+       // determine total exclusive cache size of level that should be flushed
+       total_cache_size=0;
+       for (j=i;j>1;j--) total_cache_size+=cpuinfo->U_Cache_Size[j-1]+cpuinfo->D_Cache_Size[j-1];
+       // subtract higher levels that are flushed too as these flushes polute the cache and reduce the effectively usable size
+       if ((i==3) && (settings&FLUSH(2))) total_cache_size-=cpuinfo->U_Cache_Size[1]+cpuinfo->D_Cache_Size[1];
+       else if ((i==3) && (settings&FLUSH(1))) total_cache_size-=cpuinfo->U_Cache_Size[0]+cpuinfo->D_Cache_Size[0];
+       if(memsize>total_cache_size)
+       {
+         cacheflush(i,num_flushes,flush_mode,flush_buffer,*(cpuinfo));
+         break;
+       }
+     }
+    }
+    for (i=2;i>0;i--)
+    {   
+     if ((settings&FLUSH(i))&&(memsize>(cpuinfo->U_Cache_Size[i-1]+cpuinfo->D_Cache_Size[i-1])))
+     {
+       cacheflush(i,num_flushes,flush_mode,flush_buffer,*(cpuinfo));
+       break;
+     }
+    }
+   }
+   else // inclusive caches
+   for (i=cpuinfo->Cachelevels;i>0;i--)
+   {   
+     if ((settings&FLUSH(i))&&(memsize>(cpuinfo->U_Cache_Size[i-1]+cpuinfo->D_Cache_Size[i-1])))
+     {
+       cacheflush(i,num_flushes,flush_mode,flush_buffer,*(cpuinfo));
+       break;
+     }
+   }
+}
+
+
+
+/* measure overhead of empty loop */
+int asm_loop_overhead(int n)
+{
+   unsigned long long a,b,c,d,i;
+   static unsigned long long ret=1000000;
+
+   for (i=0;i<n;i++){
+        /* Output: RAX: stop timestamp 
+         *         RBX: start timestamp
+         */
+       __asm__ __volatile__(
+                "mov $1,%%rcx;"       
+                TIMESTAMP
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+//                "jmp _work_loop_overhead;"
+//                ".align 64,0x0;"
+//                "_work_loop_overhead:"
+//                "sub $1,%%rcx;"
+//                "jnz _work_loop_overhead;"
+                SERIALIZE    
+                TIMESTAMP
+                : "=a" (a), "=b" (b), "=c" (c), "=d" (d)
+        );
+        if ((a-b)<ret) ret=(a-b);
+   }			
+  return (int)ret;
+}
+
+/** assembler implementation of bandwidth measurement using movdqa instruction
+ */
+
+static double asm_work_movdqa(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_movdqa(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqa_1;"
+                ".align 64,0x0;"
+                "_work_loop_movdqa_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqa %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqa %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqa %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqa %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqa %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqa %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqa %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqa %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqa %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqa %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqa %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqa %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqa %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqa %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqa %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqa %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqa_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqa_2;"
+                ".align 64,0x0;"
+                "_work_loop_movdqa_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqa %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqa %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqa %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqa %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqa %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqa %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqa %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqa %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqa %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqa %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqa %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqa %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqa %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqa %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqa %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqa %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqa_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/66;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqa_3;"
+                ".align 64,0x0;"
+                "_work_loop_movdqa_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqa %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqa %%xmm1, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqa %%xmm2, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqa %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqa %%xmm1, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqa %%xmm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqa %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqa %%xmm1, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqa %%xmm2, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqa %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqa %%xmm1, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqa %%xmm2, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqa %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqa %%xmm1, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqa %%xmm2, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqa %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm0, 1008(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "movdqa %%xmm1, 1024(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 1040(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqa_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*66*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqa_4;"
+                ".align 64,0x0;"
+                "_work_loop_movdqa_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqa %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqa %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqa %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqa %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqa %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqa %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqa %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqa %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqa %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqa %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqa %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqa %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqa %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqa %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqa %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqa %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqa_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqa_8;"
+                ".align 64,0x0;"
+                "_work_loop_movdqa_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqa %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqa %%xmm4, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqa %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqa %%xmm4, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqa %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqa %%xmm4, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqa %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqa %%xmm4, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqa %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqa %%xmm4, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqa %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqa %%xmm4, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqa %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqa %%xmm4, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqa %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm2, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm3, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqa %%xmm4, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm5, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm6, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqa %%xmm7, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqa_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using vmovdqa instruction
+ */
+
+static double asm_work_vmovdqa(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_vmovdqa(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+   //wait for transition to AVX frequency
+   if (AVX_STARTUP_REG_OPS) for(i=0;i<AVX_STARTUP_REG_OPS;i++){
+     __asm__ __volatile__("vmovdqa %%ymm0, %%ymm1;"::: "xmm0", "xmm1");
+   }
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqa_1;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqa_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqa %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqa %%ymm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqa %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqa %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqa %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqa %%ymm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqa %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqa %%ymm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqa %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqa %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqa %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqa %%ymm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqa %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqa %%ymm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqa %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqa %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqa_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqa_2;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqa_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqa %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqa %%ymm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqa %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqa %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqa %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqa %%ymm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqa %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqa %%ymm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqa %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqa %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqa %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqa %%ymm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqa %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqa %%ymm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqa %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqa %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqa_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/33;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqa_3;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqa_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqa %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqa %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqa %%ymm1, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm2, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqa %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqa %%ymm2, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqa %%ymm1, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm2, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqa %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqa %%ymm2, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqa %%ymm1, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm2, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqa %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqa %%ymm2, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqa %%ymm1, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm2, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqa %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqa %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm0, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqa %%ymm1, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm2, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqa %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 992(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "vmovdqa %%ymm2, 1024(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqa_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*33*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqa_4;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqa_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqa %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqa %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqa %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqa %%ymm2, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqa %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqa %%ymm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqa %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqa %%ymm2, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqa %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqa %%ymm2, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqa %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqa %%ymm2, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqa %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqa %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqa %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqa %%ymm2, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqa_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqa_8;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqa_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqa %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqa %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqa %%ymm4, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm5, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqa %%ymm6, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm7, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqa %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqa %%ymm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqa %%ymm4, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm5, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqa %%ymm6, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm7, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqa %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqa %%ymm2, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqa %%ymm4, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm5, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqa %%ymm6, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm7, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqa %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqa %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm3, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqa %%ymm4, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm5, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqa %%ymm6, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqa %%ymm7, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqa_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using movdqu instruction
+ */
+
+static double asm_work_movdqu(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_movdqu(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqu_1;"
+                ".align 64,0x0;"
+                "_work_loop_movdqu_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqu %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqu %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqu %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqu %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqu %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqu %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqu %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqu %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqu %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqu %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqu %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqu %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqu %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqu %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqu %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqu %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqu_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqu_2;"
+                ".align 64,0x0;"
+                "_work_loop_movdqu_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqu %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqu %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqu %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqu %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqu %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqu %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqu %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqu %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqu %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqu %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqu %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqu %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqu %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqu %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqu %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqu %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqu_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/66;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqu_3;"
+                ".align 64,0x0;"
+                "_work_loop_movdqu_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqu %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqu %%xmm1, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqu %%xmm2, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqu %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqu %%xmm1, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqu %%xmm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqu %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqu %%xmm1, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqu %%xmm2, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqu %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqu %%xmm1, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqu %%xmm2, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqu %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqu %%xmm1, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqu %%xmm2, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqu %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm0, 1008(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "movdqu %%xmm1, 1024(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 1040(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqu_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*66*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqu_4;"
+                ".align 64,0x0;"
+                "_work_loop_movdqu_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqu %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqu %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqu %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqu %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqu %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqu %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqu %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqu %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqu %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqu %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqu %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqu %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqu %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqu %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqu %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqu %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqu_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movdqu_8;"
+                ".align 64,0x0;"
+                "_work_loop_movdqu_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movdqu %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movdqu %%xmm4, 64(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 80(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 96(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movdqu %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 160(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movdqu %%xmm4, 192(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 208(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 224(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movdqu %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 288(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movdqu %%xmm4, 320(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 336(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 352(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movdqu %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movdqu %%xmm4, 448(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 464(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 480(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movdqu %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 544(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movdqu %%xmm4, 576(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 592(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 608(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movdqu %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 672(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movdqu %%xmm4, 704(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 720(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 736(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movdqu %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movdqu %%xmm4, 832(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 848(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 864(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movdqu %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm2, 928(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm3, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movdqu %%xmm4, 960(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm5, 976(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm6, 992(%%rbx);"NOP(NOPCOUNT)
+                "movdqu %%xmm7, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movdqu_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using vmovdqu instruction
+ */
+
+static double asm_work_vmovdqu(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_vmovdqu(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+   //wait for transition to AVX frequency
+   if (AVX_STARTUP_REG_OPS) for(i=0;i<AVX_STARTUP_REG_OPS;i++){
+     __asm__ __volatile__("vmovdqa %%ymm0, %%ymm1;"::: "xmm0", "xmm1");
+   }
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqu_1;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqu_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqu %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqu %%ymm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqu %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqu %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqu %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqu %%ymm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqu %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqu %%ymm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqu %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqu %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqu %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqu %%ymm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqu %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqu %%ymm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqu %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqu %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqu_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqu_2;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqu_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqu %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqu %%ymm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqu %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqu %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqu %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqu %%ymm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqu %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqu %%ymm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqu %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqu %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqu %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqu %%ymm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqu %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqu %%ymm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqu %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqu %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqu_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/33;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqu_3;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqu_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqu %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqu %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqu %%ymm1, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm2, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqu %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqu %%ymm2, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqu %%ymm1, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm2, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqu %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqu %%ymm2, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqu %%ymm1, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm2, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqu %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqu %%ymm2, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqu %%ymm1, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm2, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqu %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqu %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm0, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqu %%ymm1, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm2, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqu %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 992(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "vmovdqu %%ymm2, 1024(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqu_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*33*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqu_4;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqu_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqu %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqu %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqu %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqu %%ymm2, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqu %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqu %%ymm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqu %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqu %%ymm2, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqu %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqu %%ymm2, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqu %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqu %%ymm2, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqu %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqu %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqu %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqu %%ymm2, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqu_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovdqu_8;"
+                ".align 64,0x0;"
+                "_work_loop_vmovdqu_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovdqu %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovdqu %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovdqu %%ymm4, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm5, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovdqu %%ymm6, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm7, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovdqu %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovdqu %%ymm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovdqu %%ymm4, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm5, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovdqu %%ymm6, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm7, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovdqu %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovdqu %%ymm2, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovdqu %%ymm4, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm5, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovdqu %%ymm6, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm7, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovdqu %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovdqu %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm3, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovdqu %%ymm4, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm5, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovdqu %%ymm6, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovdqu %%ymm7, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovdqu_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using mov instruction
+ */
+
+static double asm_work_mov(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_mov(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_mov_1;"
+                ".align 64,0x0;"
+                "_work_loop_mov_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "mov %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 8(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 16(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 24(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 32(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 40(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 48(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "mov %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 72(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 80(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 88(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 104(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 112(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "mov %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 136(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 144(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 152(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 160(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 168(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 176(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "mov %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 200(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 208(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 216(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 224(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 232(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 240(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "mov %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 264(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 272(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 280(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 296(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 304(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "mov %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 328(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 336(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 344(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 352(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 360(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 368(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "mov %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 392(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 400(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 408(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 416(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 424(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 432(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "mov %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 456(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 464(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 472(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 488(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 496(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "mov %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 520(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 528(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 536(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 544(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 552(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 560(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "mov %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 584(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 592(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 600(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 608(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 616(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 624(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "mov %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 648(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 656(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 664(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 680(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 688(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "mov %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 712(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 720(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 728(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 736(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 744(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 752(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "mov %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 776(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 784(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 792(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 800(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 808(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 816(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "mov %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 840(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 848(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 856(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 872(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 880(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "mov %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 904(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 912(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 920(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 928(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 936(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 944(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "mov %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 968(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 976(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 984(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 992(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 1000(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 1008(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_mov_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_mov_2;"
+                ".align 64,0x0;"
+                "_work_loop_mov_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "mov %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 16(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 24(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 32(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 40(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 48(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "mov %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 72(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 80(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 88(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 104(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 112(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "mov %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 136(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 144(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 152(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 160(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 168(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 176(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "mov %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 208(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 216(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 224(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 232(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 240(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "mov %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 264(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 272(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 280(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 296(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 304(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "mov %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 328(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 336(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 344(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 352(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 360(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 368(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "mov %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 400(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 408(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 416(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 424(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 432(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "mov %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 456(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 464(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 472(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 488(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 496(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "mov %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 520(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 528(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 536(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 544(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 552(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 560(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "mov %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 592(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 600(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 608(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 616(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 624(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "mov %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 648(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 656(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 664(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 680(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 688(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "mov %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 712(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 720(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 728(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 736(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 744(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 752(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "mov %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 784(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 792(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 800(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 808(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 816(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "mov %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 840(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 848(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 856(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 872(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 880(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "mov %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 904(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 912(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 920(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 928(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 936(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 944(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "mov %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 976(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 984(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 992(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 1000(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 1008(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_mov_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/132;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_mov_3;"
+                ".align 64,0x0;"
+                "_work_loop_mov_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "mov %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 16(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 24(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 32(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 40(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 48(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "mov %%r10, 64(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 72(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 80(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 88(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 104(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 112(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "mov %%r9, 128(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 136(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 144(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 152(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 160(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 168(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 176(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "mov %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 208(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 216(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 224(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 232(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 240(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "mov %%r10, 256(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 264(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 272(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 280(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 296(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 304(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "mov %%r9, 320(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 328(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 336(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 344(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 352(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 360(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 368(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "mov %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 400(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 408(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 416(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 424(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 432(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "mov %%r10, 448(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 456(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 464(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 472(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 488(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 496(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "mov %%r9, 512(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 520(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 528(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 536(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 544(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 552(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 560(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "mov %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 592(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 600(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 608(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 616(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 624(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "mov %%r10, 640(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 648(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 656(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 664(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 680(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 688(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "mov %%r9, 704(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 712(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 720(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 728(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 736(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 744(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 752(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "mov %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 784(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 792(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 800(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 808(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 816(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "mov %%r10, 832(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 840(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 848(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 856(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 872(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 880(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "mov %%r9, 896(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 904(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 912(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 920(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 928(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 936(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 944(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "mov %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 976(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 984(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 992(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 1000(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 1008(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 1016(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "mov %%r10, 1024(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 1032(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 1040(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 1048(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_mov_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*132*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_mov_4;"
+                ".align 64,0x0;"
+                "_work_loop_mov_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "mov %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 16(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 24(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 32(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 40(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 48(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "mov %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 72(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 80(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 88(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 104(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 112(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "mov %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 136(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 144(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 152(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 160(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 168(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 176(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "mov %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 208(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 216(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 224(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 232(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 240(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "mov %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 264(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 272(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 280(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 296(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 304(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "mov %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 328(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 336(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 344(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 352(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 360(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 368(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "mov %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 400(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 408(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 416(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 424(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 432(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "mov %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 456(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 464(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 472(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 488(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 496(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "mov %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 520(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 528(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 536(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 544(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 552(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 560(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "mov %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 592(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 600(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 608(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 616(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 624(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "mov %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 648(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 656(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 664(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 680(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 688(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "mov %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 712(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 720(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 728(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 736(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 744(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 752(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "mov %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 784(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 792(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 800(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 808(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 816(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "mov %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 840(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 848(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 856(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 872(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 880(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "mov %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 904(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 912(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 920(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 928(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 936(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 944(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "mov %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 976(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 984(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r8, 992(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 1000(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 1008(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_mov_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_mov_8;"
+                ".align 64,0x0;"
+                "_work_loop_mov_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "mov %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 16(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 24(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 32(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 40(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 48(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "mov %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 72(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 80(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 88(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 96(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 104(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 112(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "mov %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 136(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 144(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 152(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 160(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 168(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 176(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "mov %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 208(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 216(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 224(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 232(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 240(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "mov %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 264(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 272(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 280(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 288(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 296(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 304(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "mov %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 328(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 336(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 344(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 352(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 360(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 368(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "mov %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 400(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 408(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 416(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 424(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 432(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "mov %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 456(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 464(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 472(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 480(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 488(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 496(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "mov %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 520(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 528(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 536(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 544(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 552(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 560(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "mov %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 592(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 600(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 608(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 616(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 624(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "mov %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 648(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 656(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 664(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 672(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 680(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 688(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "mov %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 712(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 720(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 728(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 736(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 744(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 752(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "mov %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 784(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 792(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 800(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 808(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 816(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "mov %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 840(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 848(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 856(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 864(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 872(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 880(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "mov %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 904(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 912(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 920(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 928(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 936(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 944(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "mov %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r10, 976(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r11, 984(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r12, 992(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r13, 1000(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r14, 1008(%%rbx);"NOP(NOPCOUNT)
+                "mov %%r15, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_mov_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using movnti instruction
+ */
+
+static double asm_work_movnti(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_movnti(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movnti_1;"
+                ".align 64,0x0;"
+                "_work_loop_movnti_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movnti %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 8(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 16(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 24(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 32(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 40(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 48(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movnti %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 72(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 80(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 88(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 104(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 112(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movnti %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 136(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 144(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 152(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 160(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 168(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 176(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movnti %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 200(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 208(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 216(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 224(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 232(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 240(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movnti %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 264(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 272(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 280(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 296(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 304(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movnti %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 328(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 336(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 344(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 352(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 360(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 368(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movnti %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 392(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 400(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 408(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 416(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 424(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 432(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movnti %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 456(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 464(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 472(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 488(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 496(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movnti %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 520(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 528(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 536(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 544(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 552(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 560(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movnti %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 584(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 592(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 600(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 608(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 616(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 624(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movnti %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 648(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 656(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 664(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 680(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 688(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movnti %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 712(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 720(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 728(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 736(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 744(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 752(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movnti %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 776(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 784(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 792(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 800(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 808(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 816(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movnti %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 840(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 848(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 856(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 872(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 880(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movnti %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 904(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 912(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 920(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 928(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 936(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 944(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movnti %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 968(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 976(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 984(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 992(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 1000(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 1008(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movnti_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movnti_2;"
+                ".align 64,0x0;"
+                "_work_loop_movnti_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movnti %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 16(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 24(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 32(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 40(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 48(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movnti %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 72(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 80(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 88(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 104(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 112(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movnti %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 136(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 144(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 152(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 160(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 168(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 176(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movnti %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 208(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 216(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 224(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 232(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 240(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movnti %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 264(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 272(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 280(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 296(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 304(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movnti %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 328(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 336(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 344(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 352(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 360(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 368(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movnti %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 400(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 408(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 416(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 424(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 432(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movnti %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 456(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 464(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 472(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 488(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 496(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movnti %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 520(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 528(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 536(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 544(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 552(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 560(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movnti %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 592(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 600(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 608(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 616(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 624(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movnti %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 648(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 656(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 664(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 680(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 688(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movnti %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 712(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 720(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 728(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 736(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 744(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 752(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movnti %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 784(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 792(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 800(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 808(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 816(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movnti %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 840(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 848(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 856(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 872(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 880(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movnti %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 904(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 912(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 920(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 928(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 936(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 944(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movnti %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 976(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 984(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 992(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 1000(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 1008(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movnti_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/132;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movnti_3;"
+                ".align 64,0x0;"
+                "_work_loop_movnti_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movnti %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 16(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 24(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 32(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 40(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 48(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movnti %%r10, 64(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 72(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 80(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 88(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 104(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 112(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movnti %%r9, 128(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 136(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 144(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 152(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 160(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 168(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 176(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movnti %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 208(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 216(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 224(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 232(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 240(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movnti %%r10, 256(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 264(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 272(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 280(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 296(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 304(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movnti %%r9, 320(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 328(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 336(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 344(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 352(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 360(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 368(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movnti %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 400(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 408(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 416(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 424(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 432(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movnti %%r10, 448(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 456(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 464(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 472(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 488(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 496(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movnti %%r9, 512(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 520(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 528(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 536(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 544(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 552(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 560(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movnti %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 592(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 600(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 608(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 616(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 624(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movnti %%r10, 640(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 648(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 656(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 664(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 680(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 688(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movnti %%r9, 704(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 712(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 720(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 728(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 736(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 744(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 752(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movnti %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 784(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 792(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 800(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 808(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 816(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movnti %%r10, 832(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 840(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 848(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 856(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 872(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 880(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movnti %%r9, 896(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 904(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 912(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 920(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 928(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 936(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 944(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movnti %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 976(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 984(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 992(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 1000(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 1008(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 1016(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "movnti %%r10, 1024(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 1032(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 1040(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 1048(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movnti_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*132*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movnti_4;"
+                ".align 64,0x0;"
+                "_work_loop_movnti_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movnti %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 16(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 24(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 32(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 40(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 48(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movnti %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 72(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 80(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 88(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 96(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 104(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 112(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movnti %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 136(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 144(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 152(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 160(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 168(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 176(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movnti %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 208(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 216(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 224(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 232(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 240(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movnti %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 264(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 272(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 280(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 288(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 296(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 304(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movnti %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 328(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 336(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 344(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 352(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 360(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 368(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movnti %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 400(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 408(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 416(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 424(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 432(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movnti %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 456(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 464(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 472(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 480(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 488(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 496(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movnti %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 520(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 528(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 536(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 544(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 552(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 560(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movnti %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 592(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 600(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 608(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 616(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 624(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movnti %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 648(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 656(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 664(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 672(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 680(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 688(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movnti %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 712(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 720(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 728(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 736(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 744(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 752(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movnti %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 784(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 792(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 800(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 808(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 816(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movnti %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 840(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 848(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 856(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 864(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 872(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 880(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movnti %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 904(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 912(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 920(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 928(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 936(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 944(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movnti %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 976(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 984(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r8, 992(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 1000(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 1008(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movnti_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/128;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movnti_8;"
+                ".align 64,0x0;"
+                "_work_loop_movnti_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movnti %%r8, 0(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 8(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 16(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 24(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 32(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 40(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 48(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 56(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movnti %%r8, 64(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 72(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 80(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 88(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 96(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 104(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 112(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 120(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movnti %%r8, 128(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 136(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 144(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 152(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 160(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 168(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 176(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 184(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movnti %%r8, 192(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 200(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 208(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 216(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 224(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 232(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 240(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 248(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movnti %%r8, 256(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 264(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 272(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 280(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 288(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 296(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 304(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 312(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movnti %%r8, 320(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 328(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 336(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 344(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 352(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 360(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 368(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 376(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movnti %%r8, 384(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 392(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 400(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 408(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 416(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 424(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 432(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 440(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movnti %%r8, 448(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 456(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 464(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 472(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 480(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 488(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 496(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 504(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movnti %%r8, 512(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 520(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 528(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 536(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 544(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 552(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 560(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 568(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movnti %%r8, 576(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 584(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 592(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 600(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 608(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 616(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 624(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 632(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movnti %%r8, 640(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 648(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 656(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 664(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 672(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 680(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 688(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 696(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movnti %%r8, 704(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 712(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 720(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 728(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 736(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 744(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 752(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 760(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movnti %%r8, 768(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 776(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 784(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 792(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 800(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 808(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 816(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 824(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movnti %%r8, 832(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 840(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 848(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 856(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 864(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 872(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 880(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 888(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movnti %%r8, 896(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 904(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 912(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 920(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 928(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 936(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 944(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 952(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movnti %%r8, 960(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r9, 968(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r10, 976(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r11, 984(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r12, 992(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r13, 1000(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r14, 1008(%%rbx);"NOP(NOPCOUNT)
+                "movnti %%r15, 1016(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movnti_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*128*8))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using movntdq instruction
+ */
+
+static double asm_work_movntdq(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_movntdq(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movntdq_1;"
+                ".align 64,0x0;"
+                "_work_loop_movntdq_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movntdq %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 16(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 32(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movntdq %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 80(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movntdq %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 144(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 160(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movntdq %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 208(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 224(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movntdq %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 272(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movntdq %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 336(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 352(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movntdq %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 400(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 416(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movntdq %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 464(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movntdq %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 528(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 544(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movntdq %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 592(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 608(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movntdq %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 656(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movntdq %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 720(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 736(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movntdq %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 784(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 800(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movntdq %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 848(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movntdq %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 912(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 928(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movntdq %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 976(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movntdq_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movntdq_2;"
+                ".align 64,0x0;"
+                "_work_loop_movntdq_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movntdq %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 32(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movntdq %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 80(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movntdq %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 160(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movntdq %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 224(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movntdq %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movntdq %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 336(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 352(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movntdq %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 416(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movntdq %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 464(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movntdq %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 544(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movntdq %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 608(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movntdq %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movntdq %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 720(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 736(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movntdq %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 800(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movntdq %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 848(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movntdq %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 928(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movntdq %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movntdq_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/66;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movntdq_3;"
+                ".align 64,0x0;"
+                "_work_loop_movntdq_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movntdq %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movntdq %%xmm1, 64(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 80(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 96(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movntdq %%xmm2, 128(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 144(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 160(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movntdq %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 224(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movntdq %%xmm1, 256(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 272(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 288(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movntdq %%xmm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 336(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 352(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movntdq %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movntdq %%xmm1, 448(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 464(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 480(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movntdq %%xmm2, 512(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 528(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 544(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movntdq %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 608(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movntdq %%xmm1, 640(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 656(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 672(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movntdq %%xmm2, 704(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 720(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 736(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movntdq %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movntdq %%xmm1, 832(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 848(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 864(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movntdq %%xmm2, 896(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 912(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 928(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movntdq %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 992(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm0, 1008(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "movntdq %%xmm1, 1024(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 1040(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movntdq_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*66*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movntdq_4;"
+                ".align 64,0x0;"
+                "_work_loop_movntdq_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movntdq %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movntdq %%xmm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 80(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 96(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movntdq %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 160(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movntdq %%xmm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 208(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 224(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movntdq %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 288(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movntdq %%xmm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 336(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 352(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movntdq %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movntdq %%xmm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 464(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 480(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movntdq %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 544(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movntdq %%xmm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 592(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 608(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movntdq %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 672(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movntdq %%xmm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 720(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 736(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movntdq %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movntdq %%xmm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 848(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 864(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movntdq %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 928(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movntdq %%xmm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 976(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 992(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movntdq_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/64;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_movntdq_8;"
+                ".align 64,0x0;"
+                "_work_loop_movntdq_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "movntdq %%xmm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 16(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 32(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 48(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "movntdq %%xmm4, 64(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 80(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 96(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 112(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "movntdq %%xmm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 144(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 160(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 176(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "movntdq %%xmm4, 192(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 208(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 224(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 240(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "movntdq %%xmm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 272(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 288(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 304(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "movntdq %%xmm4, 320(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 336(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 352(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 368(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "movntdq %%xmm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 400(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 416(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 432(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "movntdq %%xmm4, 448(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 464(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 480(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 496(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "movntdq %%xmm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 528(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 544(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 560(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "movntdq %%xmm4, 576(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 592(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 608(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 624(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "movntdq %%xmm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 656(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 672(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 688(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "movntdq %%xmm4, 704(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 720(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 736(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 752(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "movntdq %%xmm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 784(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 800(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 816(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "movntdq %%xmm4, 832(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 848(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 864(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 880(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "movntdq %%xmm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm1, 912(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm2, 928(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm3, 944(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "movntdq %%xmm4, 960(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm5, 976(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm6, 992(%%rbx);"NOP(NOPCOUNT)
+                "movntdq %%xmm7, 1008(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_movntdq_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*64*16))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** assembler implementation of bandwidth measurement using vmovntdq instruction
+ */
+
+static double asm_work_vmovntdq(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data) __attribute__((noinline)); 
+static double asm_work_vmovntdq(unsigned long long addr, unsigned long long accesses, unsigned long long burst_length, unsigned long long call_latency,unsigned long long freq,volatile mydata_t *data)
+{
+   unsigned long long passes;
+   double ret;
+   int i;
+ 
+   #ifdef USE_PAPI
+    if (data->num_events) PAPI_reset(data->Eventset);
+   #endif
+
+   //wait for transition to AVX frequency
+   if (AVX_STARTUP_REG_OPS) for(i=0;i<AVX_STARTUP_REG_OPS;i++){
+     __asm__ __volatile__("vmovdqa %%ymm0, %%ymm1;"::: "xmm0", "xmm1");
+   }
+
+   switch (burst_length)
+   {
+
+    case 1:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovntdq_1;"
+                ".align 64,0x0;"
+                "_work_loop_vmovntdq_1:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovntdq %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovntdq %%ymm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovntdq %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovntdq %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovntdq %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovntdq %%ymm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovntdq %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovntdq %%ymm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovntdq %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovntdq %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovntdq %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovntdq %%ymm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovntdq %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovntdq %%ymm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovntdq %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovntdq %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovntdq_1;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 2:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovntdq_2;"
+                ".align 64,0x0;"
+                "_work_loop_vmovntdq_2:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovntdq %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovntdq %%ymm0, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovntdq %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovntdq %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovntdq %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovntdq %%ymm0, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovntdq %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovntdq %%ymm0, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovntdq %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovntdq %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovntdq %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovntdq %%ymm0, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovntdq %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovntdq %%ymm0, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovntdq %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovntdq %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovntdq_2;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 3:
+      passes=accesses/33;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovntdq_3;"
+                ".align 64,0x0;"
+                "_work_loop_vmovntdq_3:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovntdq %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovntdq %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovntdq %%ymm1, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm2, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovntdq %%ymm0, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovntdq %%ymm2, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovntdq %%ymm1, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm2, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovntdq %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovntdq %%ymm2, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovntdq %%ymm1, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm2, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovntdq %%ymm0, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovntdq %%ymm2, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovntdq %%ymm1, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm2, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovntdq %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovntdq %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm0, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovntdq %%ymm1, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm2, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovntdq %%ymm0, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 992(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,1024,rbx)
+                "vmovntdq %%ymm2, 1024(%%rbx);"NOP(NOPCOUNT)
+                "add $1056,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovntdq_3;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*33*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 4:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovntdq_4;"
+                ".align 64,0x0;"
+                "_work_loop_vmovntdq_4:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovntdq %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovntdq %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovntdq %%ymm0, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovntdq %%ymm2, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovntdq %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovntdq %%ymm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovntdq %%ymm0, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovntdq %%ymm2, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovntdq %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovntdq %%ymm2, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovntdq %%ymm0, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovntdq %%ymm2, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovntdq %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovntdq %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovntdq %%ymm0, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovntdq %%ymm2, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovntdq_4;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+
+    case 8:
+      passes=accesses/32;
+      if (!passes) return 0;
+      /*
+       * Input:  RBX: addr (pointer to the buffer)
+       *         RCX: passes (number of loop iterations)
+       * Output: RAX: stop timestamp - start timestamp
+       */
+      __asm__ __volatile__(
+                "sub $16,%%rsp;"	//fix unexplainable stack pointer bug
+                TIMESTAMP
+                SERIALIZE
+                "jmp _work_loop_vmovntdq_8;"
+                ".align 64,0x0;"
+                "_work_loop_vmovntdq_8:"
+                PREFETCH(LINE_PREFETCH,0,rbx)
+                "vmovntdq %%ymm0, 0(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 32(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,64,rbx)
+                "vmovntdq %%ymm2, 64(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 96(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,128,rbx)
+                "vmovntdq %%ymm4, 128(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm5, 160(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,192,rbx)
+                "vmovntdq %%ymm6, 192(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm7, 224(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,256,rbx)
+                "vmovntdq %%ymm0, 256(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 288(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,320,rbx)
+                "vmovntdq %%ymm2, 320(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 352(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,384,rbx)
+                "vmovntdq %%ymm4, 384(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm5, 416(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,448,rbx)
+                "vmovntdq %%ymm6, 448(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm7, 480(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,512,rbx)
+                "vmovntdq %%ymm0, 512(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 544(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,576,rbx)
+                "vmovntdq %%ymm2, 576(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 608(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,640,rbx)
+                "vmovntdq %%ymm4, 640(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm5, 672(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,704,rbx)
+                "vmovntdq %%ymm6, 704(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm7, 736(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,768,rbx)
+                "vmovntdq %%ymm0, 768(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm1, 800(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,832,rbx)
+                "vmovntdq %%ymm2, 832(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm3, 864(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,896,rbx)
+                "vmovntdq %%ymm4, 896(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm5, 928(%%rbx);"NOP(NOPCOUNT)
+                PREFETCH(LINE_PREFETCH,960,rbx)
+                "vmovntdq %%ymm6, 960(%%rbx);"NOP(NOPCOUNT)
+                "vmovntdq %%ymm7, 992(%%rbx);"NOP(NOPCOUNT)
+                "add $1024,%%rbx;"
+                "sub $1,%%rcx;"
+                "jnz _work_loop_vmovntdq_8;"
+
+                SERIALIZE
+                "mov %%rax,%%rbx;"
+                TIMESTAMP
+                "sub %%rbx,%%rax;"
+                "add $16,%%rsp;"	//fix unexplainable stack pointer bug
+                : "=a" (addr)
+                : "b"(addr), "c" (passes)
+                : "%rdx", "memory"
+
+      );
+      ret=(((double)(passes*32*32))/((double)(((addr)-call_latency))/(((double)freq)*0.000000001)));
+      break;
+    default: ret=0.0;break;
+   }
+
+  #ifdef USE_PAPI
+    if (data->num_events) PAPI_read(data->Eventset,data->values);
+  #endif
+    return ret;
+}
+
+/** function that performs the measurement
+ *   - entry point for BenchIT framework (called by bi_entry())
+ */
+void  _work( unsigned long long memsize, int offset, int function, int burst_length, int runs, volatile mydata_t* data, double **results)
+{
+  int loop_overhead,i,j,t;
+  double tmax;
+  double tmp=(double)0;
+  unsigned long long tmp2,tmp3;
+  int dtsize,max_threads;
+  unsigned long long aligned_addr,accesses;
+  #ifdef USE_PAPI
+  int count;
+  #endif
+
+  aligned_addr=(unsigned long long)(data->buffer) + offset;
+
+  switch (function) {
+    case 1: dtsize = 32; break;
+    case 3: dtsize = 32; break;
+    case 4: dtsize = 8; break;
+    case 5: dtsize = 8; break;
+    case 7: dtsize = 32; break;
+    default: dtsize = 16; break;
+  }
+  accesses = memsize / dtsize;
+  if ((data->settings)&LOOP_OVERHEAD_COMP) loop_overhead=data->loop_overhead;
+  else loop_overhead=data->cpuinfo->rdtsc_latency;
+
+  if (accesses<512) runs*=5;
+  else if (accesses<1024) runs*=3;
+  else if (accesses<4096) runs*=2;
+  if (memsize>data->cpuinfo->Total_D_Cache_Size) runs/=3;
+  if (runs==0) runs=1;
+
+  max_threads=data->num_results;
+  for (t=0;t<max_threads;t++)
+  {
+   tmax=0;
+  
+   if(!t) aligned_addr=(unsigned long long)(data->buffer) + offset;
+   else aligned_addr=data->threaddata[t].aligned_addr;
+  
+   if (accesses) 
+   {
+    for (i=0;i<runs;i++)
+    {
+    /* USE MODE ADAPTION (for BENCHIT_KERNEL_*_USE_MODE={S|F|O})
+     * enforcing data to be in one of the shared coherency states (SHARED/OWNED/FORWARD), is implemented by adapting the target state for
+     * individual accesses (a specific core (BENCHIT_KERNEL_SHARE_CPU) is used to share cachelines with the currently selected CPU (thread_id))
+     * Forward: - Thread on SHARE_CPU accesses data with use mode EXCLUSIVE
+     *          - Thread on selected CPU accesses data with use mode FORWARD (read only)
+     *          Note: Forward seems to be a per-package state
+     *                - Cores will have the line in shared state
+     *                - L3 will have it in shared state (and 2 core valid bits set) if both cores share a package (die)
+     *                - only if cores are in different packacges (dies), one L3 (last accessing core determines which one) will mark the line with state Forward
+     *          Note: only usefull if coherency protocol is MESIF !!!
+     * Shared:  - Thread on selected CPU accesses data with use mode EXCLUSIVE
+     *          - Thread on SHARE_CPU accesses data with use mode SHARED (read only)
+     *          Note: works on MESIF and non-MESIF protocols (copy on SHARE_CPU will be in Forward state for MESIF, thus SHRAE_CPU should be as far away from first CPU as posible)
+     * Owned:   - Thread on selected CPU accesses data with use mode MODIFIED
+     *          - Thread on SHARE_CPU accesses data with use mode SHARED (read only)
+     *          Note: only works if coherency protocol is MOESI (otherwise both lines will be in shared state)
+     */
+
+   if (!strcmp("GenuineIntel",data->cpuinfo->vendor))
+   {
+      /* 
+       * create copies in CPUs from SHARED_CPU_LIST first, forward copy in target CPU will be created in next step
+       * one CPU in SHARED_CPU_LIST -> Exclusive copy in FRST_SHARE_CPU
+       * multiple CPUs in SHARED_CPU_LIST -> one or multiple shared copies, forward copy in last CPU in SHARED_CPU_LIST
+       */
+      if ((data->USE_MODE==MODE_FORWARD)){
+        //tell other threads to use memory
+        unsigned long long tmp;
+        int i;
+
+        for (i=data->FRST_SHARE_CPU;i<data->FRST_SHARE_CPU+data->NUM_SHARED_CPUS;i++){
+          tmp=data->threaddata[i].aligned_addr;
+          if (t) data->threaddata[i].aligned_addr=data->threaddata[t].aligned_addr;
+          else data->threaddata[i].aligned_addr=aligned_addr;
+          data->threaddata[i].memsize=memsize;
+          data->threaddata[i].accesses=accesses;
+          if (i==data->FRST_SHARE_CPU) data->threaddata[i].USE_MODE=MODE_EXCLUSIVE;
+          else data->threaddata[i].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+          data->thread_comm[i]=THREAD_USE_MEMORY;
+          while (!data->ack);
+          data->ack=0;
+          data->thread_comm[i]=THREAD_WAIT;    
+          //wait for other thread using the memory
+          while (!data->ack); //printf("wait for ack 1\n");
+          data->ack=0;
+          while (!data->done); //printf("wait for done 1\n");
+          data->done=0;
+          data->threaddata[i].aligned_addr=tmp;
+        }
+      }
+
+      /* 
+       * modified/exclusive: create copy with the requested state in target CPU (CPUs in SHARED_CPU_LIST not involved)
+       * shared: create exclussive copy in target CPU first, will be transformed to shared by later accesses of CPUs in SHARED_CPU_LIST
+       * forward: one exclusive or multiple shared copies already exist in CPUs from SHARED_CPU_LIST, additional read inserts forward copy in target CPU
+       */    
+      if (!t){ // measure local cache hierarchy      
+        //access whole buffer to warm up cache
+        if ((data->USE_MODE==MODE_SHARED)) use_memory((void*)aligned_addr,data->cache_flush_area,memsize,MODE_EXCLUSIVE,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo));
+        else use_memory((void*)aligned_addr,data->cache_flush_area,memsize,data->USE_MODE,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo));
+      }
+      else{ // measure accesses to other cores' caches
+        //tell other thread to use memory
+        data->threaddata[t].memsize=memsize;
+        data->threaddata[t].accesses=accesses;
+        if ((data->USE_MODE==MODE_SHARED)) data->threaddata[t].USE_MODE=MODE_EXCLUSIVE;
+        else data->threaddata[t].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+        data->thread_comm[t]=THREAD_USE_MEMORY;
+        while (!data->ack);
+        data->ack=0;
+        data->thread_comm[t]=THREAD_WAIT;    
+        //wait for other thread using the memory
+        while (!data->ack); //printf("wait for ack 2\n");
+        data->ack=0;
+        while (!data->done);//printf("wait for done 2\n");
+        data->done=0;             
+      }
+ 
+      /* turn Exclusive copy in target CPU into Shared copy
+       * one CPU in SHARED_CPU_LIST will have forward copy
+       */       
+      if (data->USE_MODE==MODE_SHARED){
+        //tell other threads to use memory
+        unsigned long long tmp;
+        int i;
+
+        for (i=data->FRST_SHARE_CPU;i<data->FRST_SHARE_CPU+data->NUM_SHARED_CPUS;i++){
+          tmp=data->threaddata[i].aligned_addr;
+          if (t) data->threaddata[i].aligned_addr=data->threaddata[t].aligned_addr;
+          else data->threaddata[i].aligned_addr=aligned_addr;
+          data->threaddata[i].memsize=memsize;
+          data->threaddata[i].accesses=accesses;
+          data->threaddata[i].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+          data->thread_comm[i]=THREAD_USE_MEMORY;
+          while (!data->ack);
+          data->ack=0;
+          data->thread_comm[i]=THREAD_WAIT;    
+          //wait for other thread using the memory
+          while (!data->ack); //printf("wait for ack 3\n");
+          data->ack=0;
+          while (!data->done); //printf("wait for done 3\n");
+          data->done=0;
+          data->threaddata[i].aligned_addr=tmp;
+        }
+      }
+   }
+   if (!strcmp("AuthenticAMD",data->cpuinfo->vendor))
+   {
+
+      /*
+       * create modified copy in one shared CPU first, MuW in target CPU will be created in next step
+       */
+      if (data->USE_MODE==MODE_MUW){
+        //tell another thread to use memory
+        unsigned long long tmp;
+        tmp=data->threaddata[data->FRST_SHARE_CPU].aligned_addr;
+        if (t) data->threaddata[data->FRST_SHARE_CPU].aligned_addr=data->threaddata[t].aligned_addr;
+        else data->threaddata[data->FRST_SHARE_CPU].aligned_addr=aligned_addr;
+        data->threaddata[data->FRST_SHARE_CPU].memsize=memsize;
+        data->threaddata[data->FRST_SHARE_CPU].accesses=accesses;
+        data->threaddata[data->FRST_SHARE_CPU].USE_MODE=MODE_MODIFIED; // -> M in SHARE_CPU, next read results in MUW in the requestor
+      __asm__ __volatile__("mfence;"::: "memory");
+
+        data->thread_comm[data->FRST_SHARE_CPU]=THREAD_USE_MEMORY;
+        while (!data->ack);
+        data->ack=0;
+        data->thread_comm[data->FRST_SHARE_CPU]=THREAD_WAIT;    
+        //wait for other thread using the memory
+        while (!data->ack); //printf("wait for ack 1\n");
+        data->ack=0;
+        while (!data->done); //printf("wait for done 1\n");
+        data->done=0;
+        data->threaddata[data->FRST_SHARE_CPU].aligned_addr=tmp;
+      }
+
+      /* 
+       * modified/exclusive: create copy with the requested state in target CPU (CPUs in SHARED_CPU_LIST not involved)
+       * MuW: read modified data from SHARED_CPU to insert MuW copy in target CPU
+       * shared: non-MuW MOESI: create shared copy in target CPU, exclusive copy in FRST_SHARE_CPU turns into shared as well
+       *         MuW: create MuW copy in target CPU, exclusive copy in FRST_SHARE_CPU is invalidated 
+       * owned: create modified copy in target CPU first, will be turned into Owned state by following accesses
+       */
+      if (!t){ // measure local cache hierarchy       
+        //access whole buffer to warm up cache
+        if ((data->USE_MODE==MODE_MUW)) use_memory((void*)aligned_addr,data->cache_flush_area,memsize,MODE_SHARED,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo)); // -> MUW, invalid in SHARE_CPU
+        else if ((data->USE_MODE==MODE_OWNED)) use_memory((void*)aligned_addr,data->cache_flush_area,memsize,MODE_MODIFIED,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo)); // -> M, invalid in SHARE_CPU, following read by SHARE_CPU will turn it into Owned, shared in SHARE_CPU or invalid, MUW in SHARE_CPU
+        else if ((data->USE_MODE==MODE_SHARED)) use_memory((void*)aligned_addr,data->cache_flush_area,memsize,MODE_EXCLUSIVE,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo)); // -> E, invalid in SHARE_CPU, following read by SHARE_CPU will turn it into Shared
+        else use_memory((void*)aligned_addr,data->cache_flush_area,memsize,data->USE_MODE,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo));
+        //early flushes disabled, now flushing all threads after creating desired coherence state
+        //flush_caches((void*) data->threaddata[t].aligned_addr,memsize,data->settings,data->NUM_FLUSHES,data->FLUSH_MODE,data->cache_flush_area,data->cpuinfo);
+      }
+      else{ // measure accesses to other cores' caches
+        //tell other thread to use memory
+        data->threaddata[t].memsize=memsize;
+        data->threaddata[t].accesses=accesses;
+        if ((data->USE_MODE==MODE_MUW)) data->threaddata[t].USE_MODE=MODE_SHARED; // -> MUW in target CPU, M -> invalid in SHARE_CPU
+        else if ((data->USE_MODE==MODE_OWNED)) data->threaddata[t].USE_MODE=MODE_MODIFIED; // -> M in target CPU, invalid in SHARE_CPU, following read by SHARE_CPU will turn it into Owned, shared in SHARE_CPU (non-MUW MOESI) or invalid, MUW in SHARE_CPU (MuW protocol)
+        else if ((data->USE_MODE==MODE_SHARED)) data->threaddata[t].USE_MODE=MODE_EXCLUSIVE; // -> E in target CPU, invalid in SHARE_CPU, following read by SHARE_CPU will turn it into Shared
+        else data->threaddata[t].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+        data->thread_comm[t]=THREAD_USE_MEMORY;
+        while (!data->ack);
+        data->ack=0;
+        data->thread_comm[t]=THREAD_WAIT;    
+        //wait for other thread using the memory
+        while (!data->ack); //printf("wait for ack 3\n");
+        data->ack=0;
+        while (!data->done);//printf("wait for done 3\n");
+        data->done=0;             
+      }
+
+      /*
+       * non-MuW: shared in target and all shared CPUs
+       * MuW: shared in target CPU, one owned copy in last shared CPU, other shared CPUs in state shared 
+       */        
+      if (data->USE_MODE==MODE_SHARED){
+        //tell other threads to use memory
+        unsigned long long tmp;
+        int i;
+
+        for (i=data->FRST_SHARE_CPU;i<data->FRST_SHARE_CPU+data->NUM_SHARED_CPUS;i++){
+          tmp=data->threaddata[i].aligned_addr;
+          if (t) data->threaddata[i].aligned_addr=data->threaddata[t].aligned_addr;
+          else data->threaddata[i].aligned_addr=aligned_addr;
+          data->threaddata[i].memsize=memsize;
+          data->threaddata[i].accesses=accesses;
+          data->threaddata[i].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+          data->thread_comm[i]=THREAD_USE_MEMORY;
+          while (!data->ack);
+          data->ack=0;
+          data->thread_comm[i]=THREAD_WAIT;    
+          //wait for other thread using the memory
+          while (!data->ack); //printf("wait for ack 4\n");
+          data->ack=0;
+          while (!data->done); //printf("wait for done 4\n");
+          data->done=0;
+          data->threaddata[i].aligned_addr=tmp;
+        }
+      }
+
+      /*
+       * non-MuW: M-> owned in target CPU, shared in SHARED_CPU
+       * MuW: invalid in target CPU, MuW in FRST_SHARE_CPU
+       */
+      if (data->USE_MODE==MODE_OWNED){
+        //tell another thread to use memory
+        unsigned long long tmp;
+        tmp=data->threaddata[data->FRST_SHARE_CPU].aligned_addr;
+        if (t) data->threaddata[data->FRST_SHARE_CPU].aligned_addr=data->threaddata[t].aligned_addr;
+        else data->threaddata[data->FRST_SHARE_CPU].aligned_addr=aligned_addr;
+        data->threaddata[data->FRST_SHARE_CPU].memsize=memsize;
+        data->threaddata[data->FRST_SHARE_CPU].accesses=accesses;
+        data->threaddata[data->FRST_SHARE_CPU].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+        data->thread_comm[data->FRST_SHARE_CPU]=THREAD_USE_MEMORY;
+        while (!data->ack);
+        data->ack=0;
+        data->thread_comm[data->FRST_SHARE_CPU]=THREAD_WAIT;    
+        //wait for other thread using the memory
+        while (!data->ack); //printf("wait for ack 5\n");
+        data->ack=0;
+        while (!data->done); //printf("wait for done 5\n");
+        data->done=0;
+        data->threaddata[data->FRST_SHARE_CPU].aligned_addr=tmp;
+      }
+
+      /* MOESI with MuW support
+       * Owned: read again to convert MUW in SHARE_CPU into Owned in target CPU, shared in SHARE_CPU (I->O, Muw->S in SHARE_CPU)
+       *        no change in non-MuW version (owned copy already present)
+       */
+      if (data->USE_MODE==MODE_OWNED){
+       if (!t){
+          use_memory((void*)aligned_addr,data->cache_flush_area,memsize,data->USE_MODE,data->USE_DIRECTION,data->NUM_USES,*(data->cpuinfo));
+        }
+       if (t){
+         //tell other thread to use memory
+         data->threaddata[t].memsize=memsize;
+         data->threaddata[t].accesses=accesses;
+         data->threaddata[t].USE_MODE=data->USE_MODE;
+      __asm__ __volatile__("mfence;"::: "memory");
+
+         data->thread_comm[t]=THREAD_USE_MEMORY;
+         while (!data->ack);
+         data->ack=0;
+         data->thread_comm[t]=THREAD_WAIT;    
+         //wait for other thread using the memory
+         while (!data->ack); //printf("wait for ack 6\n");
+         data->ack=0;
+         while (!data->done);//printf("wait for done 6\n");
+         data->done=0;
+       }
+      }
+
+   }
+
+      //flush cachelevels as specified in PARAMETERS
+      //tell threads on shared CPUs to flush caches  
+      for (j=data->FRST_SHARE_CPU;j<data->FRST_SHARE_CPU+data->NUM_SHARED_CPUS;j++){
+         if (data->flush_share_cpu) data->thread_comm[j]=THREAD_FLUSH_ALL;
+         else data->thread_comm[j]=THREAD_FLUSH;
+         while (!data->ack);
+         data->ack=0;
+         data->thread_comm[j]=THREAD_WAIT;    
+         //wait for other thread flushing their caches
+         while (!data->ack); //printf("wait for ack 6\n");
+         data->ack=0;       
+      }     
+      if (t){
+         //tell thread on target CPU to flush caches
+         data->thread_comm[t]=THREAD_FLUSH;
+         while (!data->ack);
+         data->ack=0;
+         data->thread_comm[t]=THREAD_WAIT;    
+         //wait for other thread flushing their caches
+         while (!data->ack); //printf("wait for ack 6\n");
+         data->ack=0;
+         if (data->settings&OPT_FLUSH_CPU0) flush_caches((void*) data->threaddata[t].aligned_addr,memsize,data->settings,data->NUM_FLUSHES,data->FLUSH_MODE,data->cache_flush_area,data->cpuinfo);
+      }
+      else flush_caches((void*) data->threaddata[t].aligned_addr,memsize,data->settings,data->NUM_FLUSHES,data->FLUSH_MODE,data->cache_flush_area,data->cpuinfo);
+
+     /* call ASM implementation */
+     switch(function){
+       case 0: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_movdqa((unsigned long long)(data->cache_flush_area),48,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_movdqa(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 1: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_vmovdqa((unsigned long long)(data->cache_flush_area),24,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_vmovdqa(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 2: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_movdqu((unsigned long long)(data->cache_flush_area),48,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_movdqu(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 3: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_vmovdqu((unsigned long long)(data->cache_flush_area),24,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_vmovdqu(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 4: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_mov((unsigned long long)(data->cache_flush_area),96,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_mov(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 5: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_movnti((unsigned long long)(data->cache_flush_area),96,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_movnti(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 6: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_movntdq((unsigned long long)(data->cache_flush_area),48,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_movntdq(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       case 7: 
+         //prefetch measurement routine
+         if (data->ENABLE_CODE_PREFETCH)
+           for (j=0;j<data->NUM_USES;j++) {tmp+=asm_work_vmovntdq((unsigned long long)(data->cache_flush_area),24,burst_length,loop_overhead,data->cpuinfo->clockrate,data);}
+         //measurement
+         tmp=asm_work_vmovntdq(aligned_addr,accesses,burst_length,loop_overhead,data->cpuinfo->clockrate,data);break;
+       default: break;
+     }
+     if ((int)tmp!=-1){
+       if (tmp>tmax)
+       {
+         tmax=tmp;
+         #ifdef USE_PAPI
+         switch (burst_length)
+         {
+           case 1: count = 1024 / dtsize; break;
+           case 2: count = 1024 / dtsize; break;
+           case 3: count = 1056 / dtsize; break;
+           case 4: count = 1024 / dtsize; break;
+           case 8: count = 1024 / dtsize; break;
+         }
+
+         for (i=0;i<data->num_events;i++)
+         {
+            data->papi_results[i*max_threads+t]=(double)data->values[i]/(double)((accesses/count)*count);
+         }
+         #endif
+       }
+     }
+    }
+   }
+   else tmax=0;
+  
+   if (tmax) (*results)[t]=tmax;
+   else (*results)[t]=INVALID_MEASUREMENT;
+  }
+}
+
+
+/** loop for additional worker threads
+ *  communicating with master thread using shared variables
+ */
+void *thread(void *threaddata)
+{
+  int id= ((threaddata_t *) threaddata)->thread_id;
+  unsigned int numa_node;
+  struct bitmask *numa_bitmask;
+  volatile mydata_t* global_data = ((threaddata_t *) threaddata)->data; //communication
+  threaddata_t* mydata = (threaddata_t*)threaddata;
+  char* filename=NULL;
+
+  struct timespec wait_ns;
+  int j,k,fd;
+  double tmp=(double)0;
+  unsigned long long i,tmp2,tmp3,old=THREAD_STOP;
+  
+  wait_ns.tv_sec=0;
+  wait_ns.tv_nsec=100000;
+  
+  do
+  {
+   old=global_data->thread_comm[id];
+  }
+  while (old!=THREAD_INIT);
+  global_data->ack=id;
+
+  cpu_set(((threaddata_t *) threaddata)->mem_bind);
+  numa_node = numa_node_of_cpu(((threaddata_t *) threaddata)->mem_bind);
+  numa_bitmask = numa_bitmask_alloc((unsigned int) numa_max_possible_node());
+  numa_bitmask = numa_bitmask_clearall(numa_bitmask);
+  numa_bitmask = numa_bitmask_setbit(numa_bitmask, numa_node);
+  numa_set_membind(numa_bitmask);
+  numa_bitmask_free(numa_bitmask);
+
+  if(mydata->buffersize)
+  {
+    if (global_data->hugepages==HUGEPAGES_OFF) mydata->buffer = (void *) _mm_malloc( mydata->buffersize,mydata->alignment);
+    if (global_data->hugepages==HUGEPAGES_ON)
+    {
+      char *dir;
+      dir=bi_getenv("BENCHIT_KERNEL_HUGEPAGE_DIR",0);
+      filename=(char*)malloc((strlen(dir)+20)*sizeof(char));
+      sprintf(filename,"%s/thread_data_%i",dir,id);
+      mydata->buffer=NULL;
+      fd=open(filename,O_CREAT|O_RDWR,0664);
+      if (fd == -1)
+      {
+        fprintf( stderr, "Allocation of buffer failed\n" ); fflush( stderr );
+        perror("open");
+        exit( 127 );
+      } 
+      mydata->buffer=(char*) mmap(NULL,mydata->buffersize,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
+      close(fd);unlink(filename);
+    } 
+    //fill buffer
+   /* initialize buffer */
+   tmp=sizeof(unsigned long long);
+   for (i=0;i<=mydata->buffersize-tmp;i+=tmp){
+      *((unsigned long long*)((unsigned long long)mydata->buffer+i))=(unsigned long long)i;
+   }
+
+    clflush(mydata->buffer,mydata->buffersize,*(mydata->cpuinfo));
+    mydata->aligned_addr=(unsigned long long)(mydata->buffer) + mydata->offset;
+  }
+  else mydata->aligned_addr=(unsigned long long)(global_data->buffer) + mydata->offset; 
+
+  cpu_set(((threaddata_t *) threaddata)->cpu_id);
+  while(1)
+  {
+     switch (global_data->thread_comm[id]){
+       case THREAD_USE_MEMORY: 
+         if (old!=THREAD_USE_MEMORY)
+         {
+           old=THREAD_USE_MEMORY;
+           global_data->ack=id;
+
+           // use memory
+           use_memory((void*)mydata->aligned_addr,mydata->cache_flush_area,mydata->memsize,mydata->USE_MODE,mydata->USE_DIRECTION,mydata->NUM_USES,*(mydata->cpuinfo));
+           global_data->done=id;
+         }
+         else 
+         {
+           tmp=100;while(tmp>0) tmp--; 
+         }        
+         break;
+       case THREAD_FLUSH: 
+         if (old!=THREAD_FLUSH)
+         {
+           old=THREAD_FLUSH;
+           global_data->ack=id;
+
+           //flush cachelevels as specified in PARAMETERS
+           flush_caches((void*) (mydata->aligned_addr),mydata->memsize,mydata->settings,mydata->NUM_FLUSHES,mydata->FLUSH_MODE,mydata->cache_flush_area,mydata->cpuinfo);
+         }
+         else 
+         {
+           tmp=100;while(tmp>0) tmp--; 
+         }        
+         break;
+       case THREAD_FLUSH_ALL: 
+         if (old!=THREAD_FLUSH_ALL)
+         {
+           old=THREAD_FLUSH_ALL;
+           global_data->ack=id;
+
+           //flush all caches
+           flush_caches((void*) (mydata->aligned_addr),mydata->cpuinfo->Total_D_Cache_Size*2,mydata->settings,mydata->NUM_FLUSHES,mydata->FLUSH_MODE,mydata->cache_flush_area,mydata->cpuinfo);
+         }
+         else 
+         {
+           tmp=100;while(tmp>0) tmp--; 
+         }        
+         break;
+       case THREAD_WAIT: // waiting
+          if (old!=THREAD_WAIT) {
+             global_data->ack=id;old=THREAD_WAIT;
+          }
+          tmp=100;while(tmp) tmp--; 
+          break;
+       case THREAD_INIT: // used for parallel initialisation only
+          tmp=100;while(tmp) tmp--; 
+          break;
+       case THREAD_STOP: // exit
+       default:
+         if (global_data->hugepages==HUGEPAGES_ON)
+         {
+           if(mydata->buffer!=NULL) munmap((void*)mydata->buffer,mydata->buffersize);
+         }
+         pthread_exit(NULL);
+    }
+  }
+}
+
+

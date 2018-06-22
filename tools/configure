@@ -4,7 +4,7 @@
 # Contact: developer@benchit.org
 #
 # $Id: configure 1 2009-09-11 12:26:19Z william $
-# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/configure $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/configure $
 # For license details see COPYING in the package base directory
 #####################################################################
 # Kernel: <description>
@@ -39,12 +39,6 @@ tools/bienvhash.template.c \
 tools/bienvhash.h \
 tools/stringlib.c \
 tools/stringlib.h \
-tools/bitWriter.c \
-tools/bitWriter.h \
-tools/gnuWriter.c \
-tools/gnuWriter.h \
-tools/output.c \
-tools/output.h \
 "
 
 	# Check existance of optional files

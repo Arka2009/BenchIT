@@ -4,7 +4,7 @@
 # Contact: developer@benchit.org
 #
 # $Id: QUICKVIEW.SH 1 2009-09-11 12:26:19Z william $
-# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/QUICKVIEW.SH $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/QUICKVIEW.SH $
 # For license details see COPYING in the package base directory
 #####################################################################
 # Shell script using gnuplot to display resultfile(s)

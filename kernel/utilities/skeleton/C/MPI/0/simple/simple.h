@@ -3,7 +3,7 @@
  * Contact: developer@benchit.org
  *
  * $Id: simple.h 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/C/MPI/0/simple/simple.h $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/C/MPI/0/simple/simple.h $
  * For license details see COPYING in the package base directory
  *******************************************************************/
 /* Kernel: simple Variant of the c-Skeleton with MPI

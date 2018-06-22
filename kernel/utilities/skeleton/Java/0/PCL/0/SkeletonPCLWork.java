@@ -3,7 +3,7 @@
  * Contact: developer@benchit.org
  *
  * $Id: SkeletonPCLWork.java 1 2009-09-11 12:26:19Z william $
- * $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/Java/0/PCL/0/SkeletonPCLWork.java $
+ * $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/kernel/utilities/skeleton/Java/0/PCL/0/SkeletonPCLWork.java $
  * For license details see COPYING in the package base directory
  *******************************************************************/
 /* Kernel: java pcl kernel skeleton

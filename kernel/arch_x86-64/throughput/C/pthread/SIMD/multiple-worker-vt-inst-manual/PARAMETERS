@@ -1,0 +1,175 @@
+#!/bin/sh
+##################################################################################################################
+# BenchIT - Performance Measurement for Scientific Applications
+# Contact: developer@benchit.org
+#
+# $Id$
+# For license details see COPYING in the package base directory
+##################################################################################################################
+# Kernel: measures throughput of memory bound SIMD instructions for cache levels and main memory.
+##################################################################################################################
+
+# additional information (e.g Turbo Boost enabled/disabled)
+COMMENT=""
+
+# at&t-style inline assembly is used so other compilers might not work
+KERNEL_CC="gcc"
+BENCHIT_CC="gcc"
+
+#BENCHIT_CC_C_FLAGS="${BENCHIT_CC_C_FLAGS} -g"
+
+# disable compiler optimization. Optimisations would destroy the measurement, as some obviously
+# useless operations when touching memory would be removed by the compiler
+BENCHIT_CC_C_FLAGS_HIGH="-O0"
+# enforce linear measurement
+BENCHIT_RUN_LINEAR="1"
+BENCHIT_RUN_ACCURACY="3"
+
+# uncomment to enable tracing
+#BENCHIT_CC="vtcc"
+#BENCHIT_CC_C_FLAGS="-vt:inst manual -vt:cc gcc -DVTRACE"
+# aditional flag for energy measurement
+#BENCHIT_CC_C_FLAGS="${BENCHIT_CC_C_FLAGS} -vt:mt"
+# optionally modify filename of trace
+#TRACE_FILE_PREFIX="${TRACE_FILE_PREFIX}PAPI_"
+#TRACE_FILE_POSTFIX="${TRACE_FILE_POSTFIX}_${CPUFREQ}"
+
+# list of memorysizes to use for the measurement
+# format: "x,y,z"or "x-y" or "x-y/step" or any combination
+# BENCHIT_KERNEL_PROBLEMLIST="8192-131071/4096,131072-4194303/32768,4194304-14999999/524288,15000000-39999999/2000000,40000000-200000000/8000000"
+
+# alternative: automatically generate logarithmic scale
+# MIN should be at least half the L1 size times the number of CPUs used
+# MAX should be at least twice the last level cache size of all used dies
+BENCHIT_KERNEL_MIN=16000
+BENCHIT_KERNEL_MAX=400000000
+BENCHIT_KERNEL_STEPS=70
+
+# defines which cpus to run on, if not set sched_getaffinity is used to determine allowed cpus
+# format: "x,y,z"or "x-y" or "x-y/step" or any combination
+# useful settings: all CPUs, all CPUs in one socket, n CPUs on all sockets
+BENCHIT_KERNEL_CPU_LIST="0-127"
+
+# minimal number of accesses for each data set size, increased automatically for larger data sets
+BENCHIT_KERNEL_SIZE=3072000000
+
+# Allocation method: (G/L/B) (default L)
+# G: threads allocate buffers in memory at node0
+# L: threads allocate buffers in their local memory
+# B: memory affinity of individual threads as specified by BENCHIT_KERNEL_MEM_BIND option
+# has no effect on UMA Systems
+# effect on NUMA Systems depends on numactl setting: requires localalloc policy
+BENCHIT_KERNEL_ALLOC="L"
+# Memory affinity, ignored if BENCHIT_KERNEL_ALLOC is not set to "B"
+# needs to be at least as long as BENCHIT_KERNEL_CPU_LIST
+BENCHIT_KERNEL_MEM_BIND="0-127"
+
+# Multiple Threads using the same memory controller can cause conflickts in the memory
+# (e.g. all Threads using the same memory channel or access the same chip of a single DIMM)
+# This parameter assigns each Thread an individual offset (Thread-ID*THREAD_OFFSET)
+# e.g not all Threads start at a 2M boundary when using hugepages
+BENCHIT_KERNEL_THREAD_OFFSET="226688"
+
+# use hugepages (0/1) (default 0, 1 recommended if hugetlbfs is available)
+BENCHIT_KERNEL_HUGEPAGES=0
+# hugepage directory, only needed when setting value above to "1"
+BENCHIT_KERNEL_HUGEPAGE_DIR="/mnt/huge"
+
+
+# method that will be used for the measurement:
+# SSE:  load_pi, load_pd, store_ps, store_pd, store_pi, store_nt_pi, copy_ps, copy_pd, copy_pi, copy_nt_pi, scale_ps, scale_pd, scale_pi, 
+#       scale_nt_pi, add_pd, add_pi, add_ps, add_sd, add_ss, mul_pd, mul_pi, mul_ps, mul_sd, mul_ss, mul_add_pd, mul_plus_add_pd, div_pd, 
+#       div_ps, div_sd, div_ss, and_pd, and_pi, sqrt_pd, sqrt_ps, sqrt_sd, sqrt_ss, or_pi, xor_pi
+# AVX:  avx_add_pd, avx_add_ps, avx_mul_pd, avx_mul_ps, avx_div_pd, avx_div_ps, avx_sqrt_pd, avx_sqrt_ps, avx_and_pd, avx_and_ps, 
+#       avx_load_pd, avx_load_pi, avx_load_ps, avx_mul_add_pd, avx_mul_plus_add_pd, avx_store_ps, avx_store_pd, avx_store_pi, avx_copy_ps, 
+#       avx_copy_pd, avx_copy_pi, avx_scale_ps, avx_scale_pd
+# FMA:  avx_fma4_pd,avx_fma4_ps, avx_fma_pd,avx_fma_ps
+# AVX2: avx_add_pi, avx_mul_pi, avx_and_pi, avx_scale_pi, avx_xor_pi, avx_xor_pi, avx_gt_pi, avx_eq_pi, avx_gt_pi8, avx_eq_pi8
+#       ( max BURST_LENGTH=4 for logical packed integer operations)
+# GPR:  gpr_load_si, gpr_add_si, gpr_mul_si, gpr_and_si, gpr_and_sd, gpr_and_ss, gpr_or_si, gpr_xor_si, gpr_cmp_si (no BURST_LENGTH effect)
+#  - _p* -> packed, _s* -> scalar
+#  - _*i -> integer, _*d -> double, _*s -> single, i8 -> 8-bit integer
+#  - mul_pi, scale_pi, scale_nt_pi require SSE4.1
+#  - avx_* require AVX
+#  - packed SIMD functions (*_pi,*_ps,*_pd) use 128 Bit (SSE) or 256 Bit (AVX) registers
+BENCHIT_KERNEL_INSTRUCTION="load_pd"
+
+# initialization values
+BENCHIT_KERNEL_INT_INIT="546743"
+# You might want to set BENCHIT_KERNEL_INT_INIT2 for logical AVX packed integer operations
+# Otherwise do NOT set BENCHIT_KERNEL_INT_INIT2
+BENCHIT_KERNEL_FP_INIT="75498.51"
+# force unaligned accesses (default 0: all accesses aligned to data type size)
+# ignored for aligned functions
+# has to be smaller then cache line length
+BENCHIT_KERNEL_OFFSET="0"
+ 
+# defines how many accesses are made using different registers, befor reusing the first register (1,2,3,4,8) (default 4)
+# burst_length 8 is not supported for all functions (not enough general purpose registers)
+BENCHIT_KERNEL_BURST_LENGTH="4"
+
+# enable performance counter measurements
+#  0: PAPI disabled
+#  1: enable PAPI core counters
+#  2: enable PAPI uncore counters (perf_event_uncore component)
+# when enabled PAPI_INC and PAPI_LIB environment variables have to point to
+# the papi include directory or papi lib directory, respectively
+# !!! recompilation required if the following parameter is changed !!!
+BENCHIT_KERNEL_ENABLE_PAPI="0"
+# comma seperated list of counters that should be measured
+BENCHIT_KERNEL_PAPI_COUNTERS="PAPI_L2_TCM"
+
+# use only registers for measurement
+# !!! recompilation required if the following parameter is changed !!!
+BENCHIT_KERNEL_REGONLY="0"
+
+# max time a benchmark can run
+BENCHIT_KERNEL_TIMEOUT=3600
+
+# TSC based synchronization (auto|enabled|disabled) (default: auto)
+# if available TSC based synchronization optimizes barrier synchronizations for concurrently leaving threads
+BENCHIT_KERNEL_TSC_SYNC="auto"
+
+# Compensation of loop overhead (enabled|disabled) (default: enabled)
+# if enabled the loop overhead is estimated and subtracted from the measured runtime
+#  - improves results for small data set sizes
+#  - can report results above peak performance if loop overhead can not be measured correctly (e.g. because of dynamic frequency scaling)
+# if disabled only the latency of the rdtsc instruction will be used as overhead
+BENCHIT_KERNEL_LOOP_OVERHEAD_COMPENSATION="enabled"
+
+# serialization instruction between data accesses and rdtsc (mfence|cpuid|disabled) (default: mfence)
+# !!! recompilation required if the following parameter is changed !!!
+BENCHIT_KERNEL_SERIALIZATION="mfence"
+
+# number of nops added after each memory reference (default 0, max 10)
+# !!! recompilation required if the following parameter is changed !!!
+BENCHIT_KERNEL_NOPCOUNT=0
+
+# if >0: one prefetcht0 instruction is executed for each consumed cacheline
+#        prefetches the cacheline that is the specified number of cachelines ahead of current position (default: 0 (no prefetch))
+# !!! recompilation required if the following parameter is changed !!!
+BENCHIT_KERNEL_LINE_PREFETCH=0
+
+# default comment that will be displayed by the GUI summarizes used settings
+BENCHIT_KERNEL_COMMENT="${COMMENT} ${BENCHIT_KERNEL_INSTRUCTION}(+${BENCHIT_KERNEL_OFFSET}), alloc: ${BENCHIT_KERNEL_ALLOC}, hugep.: ${BENCHIT_KERNEL_HUGEPAGES}"
+
+VT_FILE_PREFIX="${TRACE_FILE_PREFIX}Energy-${BENCHIT_KERNEL_INSTRUCTION}_CPU-${BENCHIT_KERNEL_CPU_MASK}${BENCHIT_KERNEL_CPU_LIST}_HUGE-${BENCHIT_KERNEL_HUGEPAGES}_ALLOC-${BENCHIT_KERNEL_ALLOC}_UNROLL-${BENCHIT_KERNEL_BURST_LENGTH}${TRACE_FILE_POSTFIX}"
+
+
+# perform measurements of different data set sizes in random order (0|1) (default 0)
+# this can be useful to reduce the impact of sophisticated hardware prefetchers
+BENCHIT_KERNEL_RANDOM=0
+
+
+# disables usage of clflush instruction in coherence state control routine (0|1) (default 0)
+BENCHIT_KERNEL_DISABLE_CLFLUSH=0
+
+
+# Uncomment settings that are not detected automatically on your machine
+#BENCHIT_KERNEL_CPU_FREQUENCY=2200000000
+#BENCHIT_KERNEL_L1_SIZE=
+#BENCHIT_KERNEL_L2_SIZE=
+#BENCHIT_KERNEL_L3_SIZE=
+#BENCHIT_KERNEL_L4_SIZE=
+#BENCHIT_KERNEL_CACHELINE_SIZE=
+

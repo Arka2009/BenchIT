@@ -1,4 +1,4 @@
-DEFINES=""
+#DEFINES="-DARMv7"
 gcc -o glibc_version glibc_version.c
 GLIBC_VERSION=`./glibc_version`
 if [ "${GLIBC_VERSION}" != "not found" ]; then
@@ -24,7 +24,7 @@ rm ./glibc_version
 
 echo '#include "properties.h"' > properties.c
 echo 'const info_t cpu_data[CPU_DATA_COUNT] = {' >> properties.c
-cat properties.list | awk -v FS="\t*"  '$1 !~ /^#/ {if($5 == "n/a") NODE=-1; else NODE=$5; print "{\""$1".*\", "$2", "$3", \""$4"\", "NODE", \""$6"\"},";}' >> properties.c
+cat properties.list | awk -v FS="\t*"  '$1 !~ /^#/ {if($5 == "n/a") NODE=-1; else NODE=$5; print "{\""$1".*\", "$2", "$3", \""$4"\", "NODE"},";}' >> properties.c
 echo '};' >> properties.c
 
 CPU_DATA_COUNT=`cat properties.c | wc -l`
@@ -40,3 +40,5 @@ ARCH_SHORT_COUNT=$((ARCH_SHORT_COUNT - CPU_DATA_COUNT - 5))
 cat properties.h.template | sed 's!\(#define CPU_DATA_COUNT \)[0-9]*!\1'$CPU_DATA_COUNT'!' | sed 's!\(#define ARCH_SHORT_COUNT \)[0-9]*!\1'$ARCH_SHORT_COUNT'!' > properties.h
 
 gcc -o cpuinfo ${DEFINES} -Wall architecture.c properties.c x86.c generic.c -lm
+
+#gcc -o cpuinfo ${DEFINES} -Wall architecture.c properties.c arm.c generic.c -lm

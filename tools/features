@@ -4,7 +4,7 @@
 # Contact: developer@benchit.org
 #
 # $Id: features 5 2009-09-14 11:36:17Z william $
-# $URL: svn+ssh://william@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/features $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/features $
 #####################################################################
 # Check whether certain features are available.
 # If yes, print some useful strings.

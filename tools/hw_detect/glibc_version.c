@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 typedef unsigned long long Uint64;
 typedef unsigned short Uint16;

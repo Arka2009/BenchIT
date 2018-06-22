@@ -1,0 +1,152 @@
+#!/bin/sh
+#####################################################################
+# BenchIT - Performance Measurement for Scientific Applications
+# Contact: developer@benchit.org
+#
+# $Id: BULL 1 2009-09-11 12:26:19Z william $
+# $URL: svn+ssh://molka@rupert.zih.tu-dresden.de/svn-base/benchit-root/BenchITv6/tools/environments/BULL $
+# For license details see COPYING in the package base directory
+#####################################################################
+
+#BENCHIT_RUN_TIMELIMIT
+#BENCHIT_RUN_MAX_MEMORY
+#BENCHIT_NUM_PROCESSES
+#BENCHIT_NUM_CPUS
+#BENCHIT_NUM_THREADS_PER_PROCESS
+#BENCHIT_RUN_USE_MPI
+#BENCHIT_RUN_USE_OPENMP
+
+nodes=""
+tasks=""
+cpus_per_task=""
+partition=""
+timelimit=""
+memory=""
+
+#determine queue
+if [ "${SLURM_QUEUE}" != "" ]
+then
+  partition="-p ${SLURM_QUEUE}"
+else
+  if [ "${BENCHIT_RUN_QUEUENAME}" != "" ]
+  then 
+    partition="-p ${BENCHIT_RUN_QUEUENAME}"
+  fi  
+fi
+
+#determine nodes/tasks/cpus_per_task from SLURM_* environment variables
+if [ "${SLURM_NODES}" != "" ]
+then
+  nodes="-N${SLURM_NODES}"
+fi
+if [ "${SLURM_TASKS}" != "" ]
+then
+  tasks="-n${SLURM_TASKS}"
+fi
+if [ "${SLURM_CPUS_PER_TASK}" != "" ]
+then
+  cpus_per_task="-c ${SLURM_CPUS_PER_TASK}"
+fi
+
+#alternatively derive nodes/tasks/cpus_per_task from BENCHIT_NUM_CPUS/PROCESSES/THREADS_PER_PROCESS
+if [ "${SLURM_NODES}" = "" ]
+then
+  if [ "${BENCHIT_RUN_USE_MPI}" = "1" ]
+  then
+    if [ "${BENCHIT_NUM_THREADS_PER_PROCESSES}" != "" ]
+    then 
+      num="`echo \"(${BENCHIT_NUM_PROCESSES}*${BENCHIT_NUM_THREADS_PER_PROCESSES}+${BENCHIT_NUM_CPUS}-1)/${BENCHIT_NUM_CPUS}\" | bc -s"
+    else
+      num="`echo \"(${BENCHIT_NUM_PROCESSES}+${BENCHIT_NUM_CPUS}-1)/${BENCHIT_NUM_CPUS}\" | bc -s"
+    fi
+    nodes="-N ${num}"
+  else
+    nodes="-N1"
+  fi
+fi
+if [ "${SLURM_TASKS}" = "" ]
+then
+  if [ "${BENCHIT_NUM_PROCESSES}" != "" ]
+  then
+    tasks="-n${BENCHIT_NUM_PROCESSES}"
+  else
+    tasks="-n1"
+  fi
+fi
+if [ "${SLURM_CPUS_PER_TASK}" = "" ]
+then
+  if [ "${BENCHIT_NUM_THREADS_PER_PROCESS}" != "" ]
+  then
+    cpus_per_task="-c ${BENCHIT_NUM_THREADS_PER_PROCESS}"
+  else
+    if [ "${BENCHIT_RUN_USE_OPENMP}" = "1" ]
+    then
+      cpus_per_task="-c ${BENCHIT_NUM_CPUS}"
+    else
+      cpus_per_task="-c 1"
+    fi
+  fi
+fi
+
+if [ "${BENCHIT_RUN_TIMELIMIT}" != "" ]
+then
+  minutes="`echo \"${BENCHIT_RUN_TIMELIMIT} / 60\" | bc -s`"
+  timelimit="-t ${minutes}"
+fi
+
+if [ "${BENCHIT_RUN_MAX_MEMORY}" != "" ]
+then
+  memory="--mem ${BENCHIT_RUN_MAX_MEMORY}"
+fi
+
+time="`date +%T_%D | sed -e s/\\\\//./g`"
+out="-o ${BENCHITROOT}/${BENCHIT_KERNELNAME}.${time}.%j.out"
+err="-e ${BENCHITROOT}/${BENCHIT_KERNELNAME}.${time}.%j.err"
+
+########################################################################
+# FIRST PART: ASSEMBLE COMMAND
+########################################################################
+
+script="x86_membench_${time}.sh"
+
+echo "#!/bin/sh" > ${script}
+echo "#SBATCH ${nodes}" >> ${script}
+echo "#SBATCH ${tasks}" >> ${script}
+echo "#SBATCH ${cpus_per_task}" >> ${script}
+echo "#SBATCH ${partition}" >> ${script}
+echo "#SBATCH ${timelimit}" >> ${script}
+echo "#SBATCH ${memory}" >> ${script}
+echo "#SBATCH ${out}" >> ${script}
+echo "#SBATCH ${err}" >> ${script}
+echo "" >> ${script}
+echo ". ${BENCHITROOT}/${BENCHIT_KERNELNAME}.${time}.env" >>  ${script}
+echo "srun ${BENCHIT_KERNELBINARY} ${BENCHIT_KERNELBINARY_ARGS}" >> ${script}
+#echo "rm  ${BENCHITROOT}/${BENCHIT_KERNELNAME}_${time}_env" >>  ${script}
+echo "rm  ${script}" >>  ${script}
+echo "" >>  ${script}
+
+execute_cmd="sbatch ${script}"
+
+########################################################################
+# SECOND PART: SAVE ENVIRONMENT IF NECESSARY
+########################################################################
+
+env | grep BENCHIT | sed -e 's/^\([^=]*\)=\(.*\)$/export \1=\"\2\"/g'> ${BENCHITROOT}/${BENCHIT_KERNELNAME}.${time}.env
+
+########################################################################
+# THIRD PART: EXECUTE AND CLEANUP
+########################################################################
+
+if [ "${BENCHIT_RUN_TEST}" != "1" ]; then
+	cd ${BENCHITROOT}
+	${execute_cmd}
+	if [ "${BENCHIT_RUN_CLEAN}" = "1" ]; then
+		rm -f ${BENCHIT_KERNELBINARY}
+	fi
+else
+	printf "${execute_cmd}\n"
+	if [ "${BENCHIT_RUN_CLEAN}" = "1" ]; then
+		printf "rm -f ${BENCHIT_KERNELBINARY}\n"
+	fi
+fi
+
