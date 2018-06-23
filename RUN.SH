@@ -41,5 +41,8 @@ if [ ! -f ${BENCHITROOT}/tools/environments/${BENCHIT_ENVIRONMENT} ]; then
 fi
 
 # Execute kernel
+echo ${BENCHIT_ENVIRONMENT}
+echo "Amaity: ChkPnt 1"
+exit 1
 . ${BENCHITROOT}/tools/environments/${BENCHIT_ENVIRONMENT}
 

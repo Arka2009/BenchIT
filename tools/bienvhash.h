@@ -10,6 +10,7 @@
 #define BIENVHASH_H
 
 #include "stringlib.h"
+#include <stdio.h>
 /** @file bienvhash.h
 * @Brief For more information check bienvhash(template)c.
 */

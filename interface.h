@@ -142,22 +142,23 @@ typedef struct bi_info {
 	 * @li @c >=1: The kernel has used this many threads per process.
 	 */
 	int num_threads_per_process;
-	union {
-		/*deprecated This value was renamed to num_measurements.
-		 * brief Maximum problem size to be measured. */
-		//int maxproblemsize;
-		/*!@brief The number of measurements that will be performed. */
-		int num_measurements;
-	};
+  	/*!@deprecated This value was renamed to num_measurements.
+  	 * @brief Maximum problem size to be measured. */
+  	int maxproblemsize;
+  	/*!@brief The number of measurements that will be performed. */
+  	int num_measurements;
+
+	/*deprecated This value was renamed to selected_result.
+	 * brief Boolean value indicating whether outliers are above(1) or below(0) correct results*/
+	int *outlier_direction_upwards;
+
 	/*!@brief Number of different functions this kernel measures. */
 	int numfunctions;
 	union {
-		/*deprecated This value was renamed to selected_result.
-		 * brief Boolean value indicating whether outliers are above(1) or below(0) correct results*/
-		//int *outlier_direction_upwards;
 		/*!@brief int value see enum SELECT_RESULT_* */
 		int *selected_result;
 	};
+
 	/*!@brief Boolean value indicating whether this kernel uses MPI version 1. */
 	int kernel_execs_mpi1;
 	/*!@brief Boolean value indicating whether this kernel uses MPI version 2. */

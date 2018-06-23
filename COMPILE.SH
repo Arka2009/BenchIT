@@ -295,6 +295,7 @@ if [ "${LOCAL_LINKER}" != "" ]; then
 	checkLinkerAvailability ${LOCAL_LINKER}
 fi
 
+
 # Set up compiler for kernel
 if [ "${LOCAL_KERNEL_FILES}" != "" ]; then
 	if [ "${LOCAL_KERNEL_COMPILER}" = "" ]; then

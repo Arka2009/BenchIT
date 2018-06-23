@@ -36,6 +36,11 @@
 #include <ctype.h>
 
 /**
+* BenchIT: Interface Definitions
+*/
+#include "interface.h"
+
+/**
 * BenchIT: used for more stringwork
 */
 #include "tools/stringlib.h"
