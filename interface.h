@@ -50,6 +50,14 @@ extern "C" {
  */
 #define IDL(X,Y) if((DEBUGLEVEL)>=(X)) {Y;fflush(stdout);fflush(stderr);}
 
+/* 
+ * ECOLAB specific display statements
+ * and #defines to enable ECOLAB specific
+ * bug fixes and debugging calls
+ */
+#define BENCHIT_ECOLAB_PRINT(X) fprintf(stdout,"\nBenchIT-Ecolab: %s\n",X)
+#define BENCHIT_ECOLAB_DEBUG 
+
 /*!@brief Template for custom overhead measuring function.
  *
  * This macro is for the use in kernels.\n
@@ -439,6 +447,7 @@ extern int bi_entry(void *mcb, int problemsize, double *results);
  * @param mcb The pointer received from bi_init().
  */
 extern void bi_cleanup(void *mcb);
+
 
 #endif
 

@@ -1866,7 +1866,13 @@ void _work(unsigned long long memsize, int def_alignment, int offset, int functi
  */
 void *thread(void *threaddata)
 {
+
   int id= ((threaddata_t *) threaddata)->thread_id;
+#ifdef BENCHIT_ECOLAB_DEBUG
+  char ECOLAB_disp_1[BUFSIZ];
+  //sprintf(ECOLAB_disp_1,"Thread@%d",id);
+  //pthread_setname_np(pthread_self(),ECOLAB_disp_1);
+#endif
   unsigned int numa_node;
   struct bitmask *numa_bitmask;
   volatile mydata_t* global_data = ((threaddata_t *) threaddata)->data; //communication
@@ -1880,13 +1886,23 @@ void *thread(void *threaddata)
   
   wait_ns.tv_sec=0;
   wait_ns.tv_nsec=100000;
-  
+
+#ifdef BENCHIT_ECOLAB_DEBUG
+  sprintf(ECOLAB_disp_1,"Thread@%d prologue (whatever that means) finished",id);
+  BENCHIT_ECOLAB_PRINT(ECOLAB_disp_1);
+#endif
+
   do
   {
    old=global_data->thread_comm[id];
   }
   while (old!=THREAD_INIT);
   global_data->ack=id;
+
+#ifdef BENCHIT_ECOLAB_DEBUG
+  sprintf(ECOLAB_disp_1,"Thread@%d prologue2 (whatever that means) finished",id);
+  BENCHIT_ECOLAB_PRINT(ECOLAB_disp_1);
+#endif
 
   cpu_set(((threaddata_t *) threaddata)->mem_bind);
   numa_node = numa_node_of_cpu(((threaddata_t *) threaddata)->mem_bind);
@@ -1895,6 +1911,12 @@ void *thread(void *threaddata)
   numa_bitmask = numa_bitmask_setbit(numa_bitmask, numa_node);
   numa_set_membind(numa_bitmask);
   numa_bitmask_free(numa_bitmask);
+
+/*#ifdef BENCHIT_ECOLAB_DEBUG
+  //char ECOLAB_disp_1[BUFSIZ];
+  sprintf(ECOLAB_disp_1,"Thread@%d prologue3 (whatever that means) finished",id);
+  BENCHIT_ECOLAB_PRINT(ECOLAB_disp_1);
+#endif*/
 
   if(mydata->buffersize)
   {
@@ -1994,5 +2016,3 @@ void *thread(void *threaddata)
     }
   }
 }
-
-

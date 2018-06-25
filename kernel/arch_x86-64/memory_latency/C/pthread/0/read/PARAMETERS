@@ -32,7 +32,7 @@ BENCHIT_RUN_LINEAR="1"
 # MIN should be about half the L1 size
 # MAX should be at least twice the last level cache size
 BENCHIT_KERNEL_MIN=16000
-BENCHIT_KERNEL_MAX=200000000
+BENCHIT_KERNEL_MAX=20000000
 BENCHIT_KERNEL_STEPS=70
 
 # defines which cpus to run on, if not set sched_getaffinity is used to determine allowed cpus
@@ -85,7 +85,7 @@ BENCHIT_KERNEL_MEM_BIND="0,1,7-15/4,23-127/8"
 
 
 # use hugepages (0/1) (default 0, 1 recommended if hugetlbfs is available)
-BENCHIT_KERNEL_HUGEPAGES=0
+BENCHIT_KERNEL_HUGEPAGES=1
 # hugepage directory, only needed when setting value above to "1"
 BENCHIT_KERNEL_HUGEPAGE_DIR="/mnt/huge"
 
@@ -163,7 +163,7 @@ BENCHIT_KERNEL_ENABLE_PAPI="0"
 BENCHIT_KERNEL_PAPI_COUNTERS="PAPI_L2_TCM"
 
 # max time a benchmark can run
-BENCHIT_KERNEL_TIMEOUT=3600
+BENCHIT_KERNEL_TIMEOUT=8000
 
 # Compensation of loop overhead (enabled|disabled) (default: enabled)
 # if enabled the loop overhead is estimated and subtracted from the measured runtime
@@ -205,4 +205,3 @@ BENCHIT_KERNEL_ENABLE_CODE_PREFETCH=0
 #BENCHIT_KERNEL_L3_SIZE=
 #BENCHIT_KERNEL_L4_SIZE=
 #BENCHIT_KERNEL_CACHELINE_SIZE=
-

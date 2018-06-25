@@ -745,6 +745,9 @@ int main(int argc, char** argv) {
 	}
 
 	/* initialize kernel */
+#ifdef BENCHIT_ECOLAB_DEBUG
+	BENCHIT_ECOLAB_PRINT("Initializing Kernel");
+#endif
 	mcb = bi_init(theInfo.num_measurements);
 	/* print info */
 	if (rank == 0) {

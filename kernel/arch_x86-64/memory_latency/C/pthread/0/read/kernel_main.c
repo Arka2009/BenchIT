@@ -233,6 +233,10 @@ void* bi_init( int problemsizemax )
    unsigned int numa_node;
    struct bitmask *numa_bitmask;
 
+#ifdef BENCHIT_ECOLAB_DEBUG
+   char ECOLAB_disp[BUFSIZ];
+#endif
+
    //printf("\n");
    //printf("sizeof mydata_t:           %i\n",sizeof(mydata_t));
    //printf("sizeof threaddata_t:       %i\n",sizeof(threaddata_t));
@@ -246,6 +250,11 @@ void* bi_init( int problemsizemax )
 
    /* if hugepages are enabled increase buffersize to the smallest multiple of 2 MIB greater than buffersize */
    if (HUGEPAGES==HUGEPAGES_ON) BUFFERSIZE=(BUFFERSIZE+(2*1024*1024))&0xffe00000ULL;
+
+#ifdef BENCHIT_ECOLAB_DEBUG
+   sprintf(ECOLAB_disp,"Allocated Buffer size=%lld\n",BUFFERSIZE);
+   BENCHIT_ECOLAB_PRINT(ECOLAB_disp);
+#endif
 
    mdp->cpuinfo=cpuinfo;
    mdp->settings=0;
@@ -310,6 +319,10 @@ void* bi_init( int problemsizemax )
       mdp->cpuinfo->Cacheline_size[2]=CACHELINE;
       mdp->cpuinfo->Cacheline_size[3]=CACHELINE;
    }
+
+   /*#ifdef BENCHIT_ECOLAB_DEBUG
+    BENCHIT_ECOLAB_PRINT("Cache Parameters modified successfully");
+   #endif*/
 
    mdp->NUM_FLUSHES=NUM_FLUSHES;
    mdp->NUM_USES=NUM_USES;
@@ -438,7 +451,6 @@ void* bi_init( int problemsizemax )
   #endif
   
 
-  /* create threads */
   for (t=1;t<mdp->num_threads;t++){
     cpu_set(mem_bind[t]);
     numa_node = numa_node_of_cpu(mem_bind[t]);
@@ -487,7 +499,12 @@ void* bi_init( int problemsizemax )
     mdp->threaddata[t].FLUSH_MODE=mdp->FLUSH_MODE;
     mdp->threaddata[t].buffersize=BUFFERSIZE;
     mdp->threaddata[t].alignment=mdp->cpuinfo->pagesizes[0];
-    mdp->threaddata[t].offset=OFFSET;    
+    mdp->threaddata[t].offset=OFFSET;
+     /* create threads */
+  #ifdef BENCHIT_ECOLAB_DEBUG
+    sprintf(ECOLAB_disp,"Creating Thread@%d",t);
+    BENCHIT_ECOLAB_PRINT(ECOLAB_disp);
+  #endif
     pthread_create(&(mdp->threads[t]),NULL,thread,(void*)(&(mdp->threaddata[t])));
     while (!mdp->ack);
   }
