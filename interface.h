@@ -152,17 +152,18 @@ typedef struct bi_info {
 	int num_threads_per_process;
   	/*!@deprecated This value was renamed to num_measurements.
   	 * @brief Maximum problem size to be measured. */
+	union{
   	int maxproblemsize;
   	/*!@brief The number of measurements that will be performed. */
   	int num_measurements;
-
-	/*deprecated This value was renamed to selected_result.
-	 * brief Boolean value indicating whether outliers are above(1) or below(0) correct results*/
-	int *outlier_direction_upwards;
+	};
 
 	/*!@brief Number of different functions this kernel measures. */
 	int numfunctions;
 	union {
+		/*deprecated This value was renamed to selected_result.
+		 * brief Boolean value indicating whether outliers are above(1) or below(0) correct results*/
+		int *outlier_direction_upwards;
 		/*!@brief int value see enum SELECT_RESULT_* */
 		int *selected_result;
 	};

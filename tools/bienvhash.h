@@ -20,7 +20,7 @@
 /** Dumps the table to stdout. */
 extern void bi_dumpTable(void);
 /** Dumps the table to our result file. */
-extern void bi_dumpTableToFile( FILE ** );
+extern void bi_dumpTableToFile( FILE * );
 /** Fills the table with predefined content. */
 extern void bi_fillTable(void);
 /** Retrieves a value from the table. If the given key

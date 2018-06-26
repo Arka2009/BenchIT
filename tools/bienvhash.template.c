@@ -100,7 +100,7 @@ us_int bi_hash( char *, int );
 
 /* visible implementations */
 void bi_dumpTable(void);
-void bi_dumpTableToFile( FILE ** );
+void bi_dumpTableToFile( FILE * );
 char *bi_get ( const char *, int * );
 void bi_initTable(void);
 int bi_put( const char *, const char * );
@@ -271,14 +271,14 @@ void bi_dumpTable(void)
 /*!@brief Dumps table to output stream. (e.g. bit-file)
  * @param(in) bi_out pointer to the output stream, where the table shall be dumped to
  */
-void bi_dumpTableToFile( FILE **bi_out )
+void bi_dumpTableToFile( FILE *bi_out )
 {
    int i = 0;
    char buf[100000];
   ELEMENT *ptr = 0;
    memset( buf, 0, 100000 );
    sprintf( buf, "beginofenvironmentvariables\n" );
-   bi_fprintf( *bi_out, buf );
+   bi_fprintf( bi_out, buf );
    /* all possible entries in hashtable */
    for ( i = 0; i < HASH_PRIME; i++ )
    {
@@ -321,14 +321,14 @@ void bi_dumpTableToFile( FILE **bi_out )
             vbuf[vpos++] = '\0';
             /* print it to file */
             sprintf( buf, "%s=\"%s\"\n", ptr->key, vbuf );
-            bi_fprintf( *bi_out, buf );
+            bi_fprintf( bi_out, buf );
             /* next element at this position of hashtable */
             ptr = ptr->next;
          }
       }
    }
    sprintf( buf, "endofenvironmentvariables\n" );
-   bi_fprintf( *bi_out, buf );
+   bi_fprintf( bi_out, buf );
 }
 
 /*!@brief Retrieves a value from the table. If the given key
